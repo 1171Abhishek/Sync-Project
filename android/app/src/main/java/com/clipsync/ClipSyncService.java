@@ -35,25 +35,22 @@ public class ClipSyncService extends AccessibilityService {
 
         new Thread(this::startTcpServer).start();
         new Thread(this::startUdpDiscovery).start();
-        new Thread(this::pollClipboard).start();
+
+        mainHandler.post(() -> {
+            if (clipboard != null) {
+                clipboard.addPrimaryClipChangedListener(this::checkClipboard);
+            }
+        });
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+        // Accessibility event gives the app window context to access clipboard
         checkClipboard();
     }
 
     @Override
     public void onInterrupt() {}
-
-    private void pollClipboard() {
-        while (true) {
-            try {
-                Thread.sleep(1000);
-                mainHandler.post(this::checkClipboard);
-            } catch (InterruptedException ignored) {}
-        }
-    }
 
     private void checkClipboard() {
         if (clipboard == null || !clipboard.hasPrimaryClip()) return;
@@ -81,15 +78,15 @@ public class ClipSyncService extends AccessibilityService {
             obj.put("content", content);
             byte[] bytes = (obj.toString() + "\n").getBytes(StandardCharsets.UTF_8);
 
-            for (String addr : peers.keySet()) {
-                Socket socket = peers.get(addr);
+            for (String hostIp : peers.keySet()) {
+                Socket socket = peers.get(hostIp);
                 if (socket != null && !socket.isClosed()) {
                     try {
                         OutputStream out = socket.getOutputStream();
                         out.write(bytes);
                         out.flush();
                     } catch (Exception e) {
-                        peers.remove(addr);
+                        peers.remove(hostIp);
                     }
                 }
             }
@@ -106,8 +103,12 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void handlePeer(Socket socket) {
-        String addr = socket.getRemoteSocketAddress().toString();
-        peers.put(addr, socket);
+        String hostIp = socket.getInetAddress().getHostAddress();
+        Socket old = peers.put(hostIp, socket);
+        if (old != null && !old.isClosed()) {
+            try { old.close(); } catch (Exception ignored) {}
+        }
+
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -128,7 +129,7 @@ public class ClipSyncService extends AccessibilityService {
             }
         } catch (Exception ignored) {
         } finally {
-            peers.remove(addr);
+            peers.remove(hostIp);
         }
     }
 
@@ -153,7 +154,9 @@ public class ClipSyncService extends AccessibilityService {
                 String msg = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
                 if (msg.startsWith("CLIP_SYNC:") && !msg.endsWith(deviceId)) {
                     String peerIp = packet.getAddress().getHostAddress();
-                    new Thread(() -> connectToPeer(peerIp)).start();
+                    if (!peers.containsKey(peerIp)) {
+                        new Thread(() -> connectToPeer(peerIp)).start();
+                    }
                 }
             }
         } catch (Exception ignored) {}
@@ -161,8 +164,7 @@ public class ClipSyncService extends AccessibilityService {
 
     private void connectToPeer(String ip) {
         try {
-            String addr = ip + ":" + TCP_PORT;
-            if (peers.containsKey(addr)) return;
+            if (peers.containsKey(ip)) return;
             Socket socket = new Socket(ip, TCP_PORT);
             handlePeer(socket);
         } catch (Exception ignored) {}

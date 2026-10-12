@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	UDPPort = 9876
-	TCPPort = 9877
+	UDPPort   = 9876
+	TCPPort   = 9877
+	LocalPort = 9878
 )
 
 type ClipboardMessage struct {
@@ -38,38 +39,17 @@ func hashContent(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// readLocalClipboard gets clipboard text (supports Linux Wayland, X11, Termux/Android)
-func readLocalClipboard() (string, error) {
-	if cmdExists("wl-paste") {
-		out, err := exec.Command("wl-paste", "--no-newline").Output()
-		if err == nil {
-			return string(out), nil
-		}
+func getHostIP(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
 	}
-	if cmdExists("termux-clipboard-get") {
-		out, err := exec.Command("termux-clipboard-get").Output()
-		if err == nil {
-			return string(out), nil
-		}
-	}
-	if cmdExists("xclip") {
-		out, err := exec.Command("xclip", "-selection", "clipboard", "-o").Output()
-		if err == nil {
-			return string(out), nil
-		}
-	}
-	return "", fmt.Errorf("no clipboard utility found")
+	return host
 }
 
-// writeLocalClipboard sets clipboard text
 func writeLocalClipboard(text string) error {
 	if cmdExists("wl-copy") {
 		cmd := exec.Command("wl-copy")
-		cmd.Stdin = strings.NewReader(text)
-		return cmd.Run()
-	}
-	if cmdExists("termux-clipboard-set") {
-		cmd := exec.Command("termux-clipboard-set")
 		cmd.Stdin = strings.NewReader(text)
 		return cmd.Run()
 	}
@@ -110,26 +90,34 @@ func (n *SyncNode) Broadcast(content string, hash string) {
 	if err != nil {
 		return
 	}
-	data = append(data, '\n')
+	data = append(data, 10)
 
-	for addr, conn := range n.peers {
+	for host, conn := range n.peers {
 		_, err := conn.Write(data)
 		if err != nil {
 			conn.Close()
-			delete(n.peers, addr)
+			delete(n.peers, host)
 		}
 	}
 }
 
 func (n *SyncNode) handlePeer(conn net.Conn) {
-	remoteAddr := conn.RemoteAddr().String()
+	hostIP := getHostIP(conn.RemoteAddr().String())
+
 	n.peersLock.Lock()
-	n.peers[remoteAddr] = conn
+	if oldConn, exists := n.peers[hostIP]; exists && oldConn != conn {
+		oldConn.Close()
+	}
+	n.peers[hostIP] = conn
 	n.peersLock.Unlock()
+
+	fmt.Printf("⚡ Connected with peer: %s\n", hostIP)
 
 	defer func() {
 		n.peersLock.Lock()
-		delete(n.peers, remoteAddr)
+		if currConn, exists := n.peers[hostIP]; exists && currConn == conn {
+			delete(n.peers, hostIP)
+		}
 		n.peersLock.Unlock()
 		conn.Close()
 	}()
@@ -138,9 +126,6 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 	for {
 		var msg ClipboardMessage
 		if err := decoder.Decode(&msg); err != nil {
-			if err != io.EOF {
-				// connection dropped
-			}
 			return
 		}
 
@@ -149,8 +134,8 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 			n.lastHash = msg.Hash
 			n.hashLock.Unlock()
 
-			fmt.Printf("📥 [%s] Received clipboard (%d bytes): %.30s...\n",
-				time.Now().Format("15:04:05"), len(msg.Content), strings.ReplaceAll(msg.Content, "\n", " "))
+			fmt.Printf("📥 [%s] Received from %s (%d bytes): %.30s...\n",
+				time.Now().Format("15:04:05"), msg.DeviceID, len(msg.Content), strings.ReplaceAll(msg.Content, "\n", " "))
 			_ = writeLocalClipboard(msg.Content)
 		} else {
 			n.hashLock.Unlock()
@@ -176,15 +161,14 @@ func (n *SyncNode) startTCPServer() {
 }
 
 func (n *SyncNode) connectToPeer(ip string) {
-	addr := fmt.Sprintf("%s:%d", ip, TCPPort)
 	n.peersLock.Lock()
-	if _, exists := n.peers[addr]; exists {
+	if _, exists := n.peers[ip]; exists {
 		n.peersLock.Unlock()
 		return
 	}
 	n.peersLock.Unlock()
 
-	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, TCPPort), 2*time.Second)
 	if err != nil {
 		return
 	}
@@ -192,7 +176,7 @@ func (n *SyncNode) connectToPeer(ip string) {
 }
 
 func (n *SyncNode) startUDPDiscovery() {
-	// 1. Broadcaster (Announces presence every 3 seconds)
+	// 1. Broadcaster
 	go func() {
 		broadcastAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("255.255.255.255:%d", UDPPort))
 		if err != nil {
@@ -211,7 +195,7 @@ func (n *SyncNode) startUDPDiscovery() {
 		}
 	}()
 
-	// 2. Listener (Discovers other devices on the Wi-Fi)
+	// 2. Listener
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", UDPPort))
 	if err != nil {
 		return
@@ -232,17 +216,41 @@ func (n *SyncNode) startUDPDiscovery() {
 		if strings.HasPrefix(msg, "CLIP_SYNC:") {
 			peerID := strings.TrimPrefix(msg, "CLIP_SYNC:")
 			if peerID != n.deviceID {
-				go n.connectToPeer(remoteAddr.IP.String())
+				peerIP := remoteAddr.IP.String()
+				n.peersLock.Lock()
+				_, alreadyConnected := n.peers[peerIP]
+				n.peersLock.Unlock()
+
+				if !alreadyConnected {
+					go n.connectToPeer(peerIP)
+				}
 			}
 		}
 	}
 }
 
-func (n *SyncNode) startClipboardWatcher() {
+// Zero-CPU Event Watcher: wl-paste sends newly copied text directly here via local socket
+func (n *SyncNode) startLocalEventServer() {
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", LocalPort))
+	if err != nil {
+		return
+	}
+	defer listener.Close()
+
 	for {
-		text, err := readLocalClipboard()
-		if err == nil && text != "" {
+		conn, err := listener.Accept()
+		if err != nil {
+			continue
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			buf, err := io.ReadAll(c)
+			if err != nil || len(buf) == 0 {
+				return
+			}
+			text := string(buf)
 			h := hashContent(text)
+
 			n.hashLock.Lock()
 			if h != n.lastHash {
 				n.lastHash = h
@@ -254,19 +262,48 @@ func (n *SyncNode) startClipboardWatcher() {
 			} else {
 				n.hashLock.Unlock()
 			}
-		}
-		time.Sleep(300 * time.Millisecond)
+		}(conn)
+	}
+}
+
+// Spawns native Wayland watcher that only triggers when Ctrl+C is pressed (0% idle CPU)
+func (n *SyncNode) startNativeWatcher() {
+	binPath, err := os.Executable()
+	if err != nil {
+		binPath = "./clip-sync"
+	}
+
+	if cmdExists("wl-paste") {
+		cmd := exec.Command("wl-paste", "--watch", binPath, "--push-local")
+		_ = cmd.Start()
 	}
 }
 
 func main() {
-	node := NewSyncNode()
-	fmt.Printf("🚀 Clipboard Sync Daemon started!\n")
-	fmt.Printf("📱 Device ID: %s\n", node.deviceID)
-	fmt.Printf("📡 Listening on TCP :%d, Discovery UDP :%d\n", TCPPort, UDPPort)
+	// Worker mode: invoked by wl-paste when user copies text
+	if len(os.Args) > 1 && os.Args[1] == "--push-local" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil || len(data) == 0 {
+			os.Exit(0)
+		}
+		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", LocalPort))
+		if err == nil {
+			_, _ = conn.Write(data)
+			conn.Close()
+		}
+		os.Exit(0)
+	}
 
+	node := NewSyncNode()
+	fmt.Printf("🚀 Ultra-Fast Clipboard Sync Daemon started!\n")
+	fmt.Printf("📱 Device ID: %s\n", node.deviceID)
+	fmt.Printf("✨ Mode: 0%% CPU Event-Driven (Zero PC Fluctuations)\n")
+
+	go node.startLocalEventServer()
 	go node.startTCPServer()
 	go node.startUDPDiscovery()
+	node.startNativeWatcher()
 
-	node.startClipboardWatcher()
+	// Keep main alive
+	select {}
 }
