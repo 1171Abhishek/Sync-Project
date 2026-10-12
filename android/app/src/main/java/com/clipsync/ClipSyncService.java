@@ -7,6 +7,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -15,6 +16,7 @@ import java.io.OutputStream;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ClipSyncService extends AccessibilityService {
@@ -46,38 +48,54 @@ public class ClipSyncService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        int type = event.getEventType();
-        // Whenever a click, context-click, or text-selection happens:
-        if (type == AccessibilityEvent.TYPE_VIEW_CLICKED ||
-            type == AccessibilityEvent.TYPE_VIEW_CONTEXT_CLICKED ||
-            type == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
-            
-            // Check after 250ms so Android has finished committing the copied text to the clipboard!
-            mainHandler.postDelayed(this::checkClipboard, 250);
-            mainHandler.postDelayed(this::checkClipboard, 600);
-        }
+        // 1. Direct text extraction from Accessibility event (bypasses Android 10 clipboard lock)
+        try {
+            int eventType = event.getEventType();
+            if (eventType == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
+                List<CharSequence> texts = event.getText();
+                int from = event.getFromIndex();
+                int to = event.getToIndex();
+                if (texts != null && !texts.isEmpty() && from >= 0 && to > from) {
+                    String full = texts.get(0).toString();
+                    if (to <= full.length()) {
+                        String selected = full.substring(from, to);
+                        processAndBroadcast(selected);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // 2. Also check system clipboard with standard debounce
+        mainHandler.postDelayed(this::checkClipboard, 200);
+        mainHandler.postDelayed(this::checkClipboard, 500);
     }
 
     @Override
     public void onInterrupt() {}
 
     private void checkClipboard() {
-        if (clipboard == null || !clipboard.hasPrimaryClip()) return;
-        ClipData clip = clipboard.getPrimaryClip();
-        if (clip != null && clip.getItemCount() > 0) {
-            CharSequence text = clip.getItemAt(0).getText();
-            if (text != null && text.length() > 0) {
-                String str = text.toString();
-                String clean = str.trim();
-                String hash = hash(clean);
-
-                synchronized (this) {
-                    if (!clean.isEmpty() && !clean.equals(lastReceived.trim()) && !hash.equals(lastHash)) {
-                        lastHash = hash;
-                        lastReceived = str;
-                        new Thread(() -> broadcast(str, hash)).start();
-                    }
+        try {
+            if (clipboard == null || !clipboard.hasPrimaryClip()) return;
+            ClipData clip = clipboard.getPrimaryClip();
+            if (clip != null && clip.getItemCount() > 0) {
+                CharSequence text = clip.getItemAt(0).getText();
+                if (text != null && text.length() > 0) {
+                    processAndBroadcast(text.toString());
                 }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void processAndBroadcast(String str) {
+        String clean = str.trim();
+        if (clean.isEmpty()) return;
+        String hash = hash(clean);
+
+        synchronized (this) {
+            if (!clean.equals(lastReceived.trim()) && !hash.equals(lastHash)) {
+                lastHash = hash;
+                lastReceived = str;
+                new Thread(() -> broadcast(str, hash)).start();
             }
         }
     }
@@ -98,7 +116,7 @@ public class ClipSyncService extends AccessibilityService {
                         out.write(bytes);
                         out.flush();
                     } catch (Exception e) {
-                        peers.remove(hostIp);
+                        peers.remove(hostIp, socket);
                     }
                 }
             }
@@ -117,7 +135,7 @@ public class ClipSyncService extends AccessibilityService {
     private void handlePeer(Socket socket) {
         String hostIp = socket.getInetAddress().getHostAddress();
         Socket old = peers.put(hostIp, socket);
-        if (old != null && !old.isClosed()) {
+        if (old != null && old != socket && !old.isClosed()) {
             try { old.close(); } catch (Exception ignored) {}
         }
 
@@ -135,17 +153,20 @@ public class ClipSyncService extends AccessibilityService {
                         lastReceived = content;
 
                         mainHandler.post(() -> {
-                            if (clipboard != null) {
-                                ClipData clip = ClipData.newPlainText("ClipSync", content);
-                                clipboard.setPrimaryClip(clip);
-                            }
+                            try {
+                                if (clipboard != null) {
+                                    ClipData clip = ClipData.newPlainText("ClipSync", content);
+                                    clipboard.setPrimaryClip(clip);
+                                }
+                            } catch (Exception ignored) {}
                         });
                     }
                 }
             }
         } catch (Exception ignored) {
         } finally {
-            peers.remove(hostIp);
+            // ONLY remove if this exact socket instance is still in the map!
+            peers.remove(hostIp, socket);
         }
     }
 

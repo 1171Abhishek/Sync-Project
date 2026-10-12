@@ -1,6 +1,5 @@
-# Compiled binaries
-clip-sync
-clip-sync-android
+# Compiled Binaries & Test Artifacts
+clip-sync*
 *.exe
 *.exe~
 *.dll
@@ -8,39 +7,60 @@ clip-sync-android
 *.dylib
 *.test
 *.out
+*.o
+*.a
 
-# Go temporary / cache
+# Go Caches & Diagnostics
 *.prof
+*.pprof
+trace.out
 
-# Android / Gradle build files
+# Android / Gradle Build Folders
 .gradle/
 build/
 app/build/
 android/.gradle/
 android/build/
 android/app/build/
+android/captures/
+captures/
 
-# Android output artifacts
+# Android Packaging & Outputs
 *.apk
 *.aab
 *.ap_
 *.dex
 output.json
 
-# Local Android SDK configuration
+# Android Secrets & Local Configurations
 local.properties
+android/local.properties
+*.keystore
+*.jks
+*.key
+google-services.json
 .cxx/
 
-# IDE and Editor files
+# Logs & Run Outputs
+*.log
+
+# IDE, Editor & OS Files
 .idea/
+android/.idea/
 *.iml
+android/*.iml
 *.ipr
 *.iws
 .vscode/
 *.swp
 *.swo
 *~
-
-# OS generated files
 .DS_Store
 Thumbs.db
+ehthumbs.db
+
+# Python & Temporary Scratch Caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/

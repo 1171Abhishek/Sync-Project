@@ -42,8 +42,10 @@ func hashContent(s string) string {
 func getHostIP(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return addr
+		host = addr
 	}
+	// Strip IPv6-mapped IPv4 prefix if present
+	host = strings.TrimPrefix(host, "::ffff:")
 	return host
 }
 
@@ -121,7 +123,8 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 	hostIP := getHostIP(conn.RemoteAddr().String())
 
 	n.peersLock.Lock()
-	if existing, exists := n.peers[hostIP]; exists && existing != nil {
+	if existing, exists := n.peers[hostIP]; exists && existing != nil && existing != conn {
+		// Keep the first working connection, close duplicate
 		n.peersLock.Unlock()
 		conn.Close()
 		return
@@ -138,6 +141,7 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 		}
 		n.peersLock.Unlock()
 		conn.Close()
+		fmt.Printf("❌ Disconnected from: %s\n", hostIP)
 	}()
 
 	decoder := json.NewDecoder(conn)
@@ -164,7 +168,7 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 }
 
 func (n *SyncNode) startTCPServer() {
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", TCPPort))
+	listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", TCPPort))
 	if err != nil {
 		return
 	}
@@ -180,14 +184,15 @@ func (n *SyncNode) startTCPServer() {
 }
 
 func (n *SyncNode) connectToPeer(ip string) {
+	cleanIP := strings.TrimPrefix(ip, "::ffff:")
 	n.peersLock.Lock()
-	if _, exists := n.peers[ip]; exists {
+	if _, exists := n.peers[cleanIP]; exists {
 		n.peersLock.Unlock()
 		return
 	}
 	n.peersLock.Unlock()
 
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, TCPPort), 2*time.Second)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", cleanIP, TCPPort), 2*time.Second)
 	if err != nil {
 		return
 	}
@@ -234,12 +239,13 @@ func (n *SyncNode) startUDPDiscovery() {
 			peerID := strings.TrimPrefix(msg, "CLIP_SYNC:")
 			if peerID != n.deviceID {
 				peerIP := remoteAddr.IP.String()
+				cleanIP := strings.TrimPrefix(peerIP, "::ffff:")
 				n.peersLock.Lock()
-				_, alreadyConnected := n.peers[peerIP]
+				_, alreadyConnected := n.peers[cleanIP]
 				n.peersLock.Unlock()
 
 				if !alreadyConnected {
-					go n.connectToPeer(peerIP)
+					go n.connectToPeer(cleanIP)
 				}
 			}
 		}
@@ -254,7 +260,6 @@ func (n *SyncNode) startClipboardWatcher() {
 			h := hashContent(cleanText)
 
 			n.mu.Lock()
-			// STRICT ECHO GUARD: Do not broadcast if it matches what we received or sent!
 			if cleanText != strings.TrimSpace(n.lastReceived) && h != n.lastHash {
 				n.lastHash = h
 				n.lastReceived = text
@@ -267,13 +272,13 @@ func (n *SyncNode) startClipboardWatcher() {
 				n.mu.Unlock()
 			}
 		}
-		time.Sleep(1000 * time.Millisecond) // 1 second is gentle on GNOME and feels instant
+		time.Sleep(750 * time.Millisecond)
 	}
 }
 
 func main() {
 	node := NewSyncNode()
-	fmt.Printf("🚀 ClipSync (with Echo Guard) started!\n")
+	fmt.Printf("🚀 ClipSync started!\n")
 	fmt.Printf("📱 Device ID: %s\n", node.deviceID)
 	fmt.Printf("📡 Ready to sync.\n")
 
