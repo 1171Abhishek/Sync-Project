@@ -46,7 +46,16 @@ public class ClipSyncService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        checkClipboard();
+        int type = event.getEventType();
+        // Whenever a click, context-click, or text-selection happens:
+        if (type == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+            type == AccessibilityEvent.TYPE_VIEW_CONTEXT_CLICKED ||
+            type == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
+            
+            // Check after 250ms so Android has finished committing the copied text to the clipboard!
+            mainHandler.postDelayed(this::checkClipboard, 250);
+            mainHandler.postDelayed(this::checkClipboard, 600);
+        }
     }
 
     @Override
@@ -63,7 +72,6 @@ public class ClipSyncService extends AccessibilityService {
                 String hash = hash(clean);
 
                 synchronized (this) {
-                    // STRICT ECHO GUARD: Never broadcast text that was just received!
                     if (!clean.isEmpty() && !clean.equals(lastReceived.trim()) && !hash.equals(lastHash)) {
                         lastHash = hash;
                         lastReceived = str;
