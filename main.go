@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -15,9 +14,8 @@ import (
 )
 
 const (
-	UDPPort   = 9876
-	TCPPort   = 9877
-	LocalPort = 9878
+	UDPPort = 9876
+	TCPPort = 9877
 )
 
 type ClipboardMessage struct {
@@ -27,15 +25,17 @@ type ClipboardMessage struct {
 }
 
 type SyncNode struct {
-	deviceID  string
-	lastHash  string
-	hashLock  sync.Mutex
-	peers     map[string]net.Conn
-	peersLock sync.Mutex
+	deviceID     string
+	lastHash     string
+	lastReceived string
+	mu           sync.Mutex
+	peers        map[string]net.Conn
+	peersLock    sync.Mutex
 }
 
 func hashContent(s string) string {
-	h := sha256.Sum256([]byte(s))
+	clean := strings.TrimSpace(s)
+	h := sha256.Sum256([]byte(clean))
 	return hex.EncodeToString(h[:])
 }
 
@@ -45,6 +45,22 @@ func getHostIP(addr string) string {
 		return addr
 	}
 	return host
+}
+
+func readLocalClipboard() (string, error) {
+	if cmdExists("wl-paste") {
+		out, err := exec.Command("wl-paste", "-n").Output()
+		if err == nil {
+			return string(out), nil
+		}
+	}
+	if cmdExists("xclip") {
+		out, err := exec.Command("xclip", "-selection", "clipboard", "-o").Output()
+		if err == nil {
+			return string(out), nil
+		}
+	}
+	return "", fmt.Errorf("no clipboard utility found")
 }
 
 func writeLocalClipboard(text string) error {
@@ -90,7 +106,7 @@ func (n *SyncNode) Broadcast(content string, hash string) {
 	if err != nil {
 		return
 	}
-	data = append(data, 10)
+	data = append(data, byte(10))
 
 	for host, conn := range n.peers {
 		_, err := conn.Write(data)
@@ -105,8 +121,10 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 	hostIP := getHostIP(conn.RemoteAddr().String())
 
 	n.peersLock.Lock()
-	if oldConn, exists := n.peers[hostIP]; exists && oldConn != conn {
-		oldConn.Close()
+	if existing, exists := n.peers[hostIP]; exists && existing != nil {
+		n.peersLock.Unlock()
+		conn.Close()
+		return
 	}
 	n.peers[hostIP] = conn
 	n.peersLock.Unlock()
@@ -129,16 +147,18 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 			return
 		}
 
-		n.hashLock.Lock()
-		if msg.Hash != n.lastHash && msg.Content != "" {
+		cleanMsg := strings.TrimSpace(msg.Content)
+		n.mu.Lock()
+		if cleanMsg != "" && cleanMsg != strings.TrimSpace(n.lastReceived) && msg.Hash != n.lastHash {
 			n.lastHash = msg.Hash
-			n.hashLock.Unlock()
+			n.lastReceived = msg.Content
+			n.mu.Unlock()
 
 			fmt.Printf("📥 [%s] Received from %s (%d bytes): %.30s...\n",
 				time.Now().Format("15:04:05"), msg.DeviceID, len(msg.Content), strings.ReplaceAll(msg.Content, "\n", " "))
 			_ = writeLocalClipboard(msg.Content)
 		} else {
-			n.hashLock.Unlock()
+			n.mu.Unlock()
 		}
 	}
 }
@@ -146,7 +166,6 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 func (n *SyncNode) startTCPServer() {
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", TCPPort))
 	if err != nil {
-		fmt.Printf("TCP Server error: %v\n", err)
 		return
 	}
 	defer listener.Close()
@@ -176,7 +195,6 @@ func (n *SyncNode) connectToPeer(ip string) {
 }
 
 func (n *SyncNode) startUDPDiscovery() {
-	// 1. Broadcaster
 	go func() {
 		broadcastAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("255.255.255.255:%d", UDPPort))
 		if err != nil {
@@ -191,11 +209,10 @@ func (n *SyncNode) startUDPDiscovery() {
 		beacon := []byte(fmt.Sprintf("CLIP_SYNC:%s", n.deviceID))
 		for {
 			_, _ = conn.Write(beacon)
-			time.Sleep(3 * time.Second)
+			time.Sleep(4 * time.Second)
 		}
 	}()
 
-	// 2. Listener
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", UDPPort))
 	if err != nil {
 		return
@@ -229,81 +246,39 @@ func (n *SyncNode) startUDPDiscovery() {
 	}
 }
 
-// Zero-CPU Event Watcher: wl-paste sends newly copied text directly here via local socket
-func (n *SyncNode) startLocalEventServer() {
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", LocalPort))
-	if err != nil {
-		return
-	}
-	defer listener.Close()
-
+func (n *SyncNode) startClipboardWatcher() {
 	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			continue
-		}
-		go func(c net.Conn) {
-			defer c.Close()
-			buf, err := io.ReadAll(c)
-			if err != nil || len(buf) == 0 {
-				return
-			}
-			text := string(buf)
-			h := hashContent(text)
+		text, err := readLocalClipboard()
+		if err == nil && text != "" {
+			cleanText := strings.TrimSpace(text)
+			h := hashContent(cleanText)
 
-			n.hashLock.Lock()
-			if h != n.lastHash {
+			n.mu.Lock()
+			// STRICT ECHO GUARD: Do not broadcast if it matches what we received or sent!
+			if cleanText != strings.TrimSpace(n.lastReceived) && h != n.lastHash {
 				n.lastHash = h
-				n.hashLock.Unlock()
+				n.lastReceived = text
+				n.mu.Unlock()
 
 				fmt.Printf("📤 [%s] Local clipboard changed (%d bytes): %.30s...\n",
 					time.Now().Format("15:04:05"), len(text), strings.ReplaceAll(text, "\n", " "))
 				n.Broadcast(text, h)
 			} else {
-				n.hashLock.Unlock()
+				n.mu.Unlock()
 			}
-		}(conn)
-	}
-}
-
-// Spawns native Wayland watcher that only triggers when Ctrl+C is pressed (0% idle CPU)
-func (n *SyncNode) startNativeWatcher() {
-	binPath, err := os.Executable()
-	if err != nil {
-		binPath = "./clip-sync"
-	}
-
-	if cmdExists("wl-paste") {
-		cmd := exec.Command("wl-paste", "--watch", binPath, "--push-local")
-		_ = cmd.Start()
+		}
+		time.Sleep(1000 * time.Millisecond) // 1 second is gentle on GNOME and feels instant
 	}
 }
 
 func main() {
-	// Worker mode: invoked by wl-paste when user copies text
-	if len(os.Args) > 1 && os.Args[1] == "--push-local" {
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil || len(data) == 0 {
-			os.Exit(0)
-		}
-		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", LocalPort))
-		if err == nil {
-			_, _ = conn.Write(data)
-			conn.Close()
-		}
-		os.Exit(0)
-	}
-
 	node := NewSyncNode()
-	fmt.Printf("🚀 Ultra-Fast Clipboard Sync Daemon started!\n")
+	fmt.Printf("🚀 ClipSync (with Echo Guard) started!\n")
 	fmt.Printf("📱 Device ID: %s\n", node.deviceID)
-	fmt.Printf("✨ Mode: 0%% CPU Event-Driven (Zero PC Fluctuations)\n")
+	fmt.Printf("📡 Ready to sync.\n")
 
-	go node.startLocalEventServer()
 	go node.startTCPServer()
 	go node.startUDPDiscovery()
-	node.startNativeWatcher()
 
-	// Keep main alive
-	select {}
+	node.startClipboardWatcher()
 }

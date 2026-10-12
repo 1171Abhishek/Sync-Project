@@ -22,6 +22,7 @@ public class ClipSyncService extends AccessibilityService {
     private static final int TCP_PORT = 9877;
     private String deviceId;
     private String lastHash = "";
+    private String lastReceived = "";
     private final ConcurrentHashMap<String, Socket> peers = new ConcurrentHashMap<>();
     private ClipboardManager clipboard;
     private Handler mainHandler;
@@ -45,7 +46,6 @@ public class ClipSyncService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // Accessibility event gives the app window context to access clipboard
         checkClipboard();
     }
 
@@ -59,10 +59,14 @@ public class ClipSyncService extends AccessibilityService {
             CharSequence text = clip.getItemAt(0).getText();
             if (text != null && text.length() > 0) {
                 String str = text.toString();
-                String hash = hash(str);
+                String clean = str.trim();
+                String hash = hash(clean);
+
                 synchronized (this) {
-                    if (!hash.equals(lastHash)) {
+                    // STRICT ECHO GUARD: Never broadcast text that was just received!
+                    if (!clean.isEmpty() && !clean.equals(lastReceived.trim()) && !hash.equals(lastHash)) {
                         lastHash = hash;
+                        lastReceived = str;
                         new Thread(() -> broadcast(str, hash)).start();
                     }
                 }
@@ -115,9 +119,13 @@ public class ClipSyncService extends AccessibilityService {
                 JSONObject obj = new JSONObject(line);
                 String hash = obj.getString("hash");
                 String content = obj.getString("content");
+                String clean = content.trim();
+
                 synchronized (this) {
-                    if (!hash.equals(lastHash)) {
+                    if (!clean.isEmpty() && !clean.equals(lastReceived.trim())) {
                         lastHash = hash;
+                        lastReceived = content;
+
                         mainHandler.post(() -> {
                             if (clipboard != null) {
                                 ClipData clip = ClipData.newPlainText("ClipSync", content);
@@ -141,7 +149,7 @@ public class ClipSyncService extends AccessibilityService {
                 InetAddress bcast = InetAddress.getByName("255.255.255.255");
                 while (true) {
                     socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
-                    Thread.sleep(3000);
+                    Thread.sleep(4000);
                 }
             } catch (Exception ignored) {}
         }).start();
