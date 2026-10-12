@@ -1,0 +1,46 @@
+# Compiled binaries
+clip-sync
+clip-sync-android
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go temporary / cache
+*.prof
+
+# Android / Gradle build files
+.gradle/
+build/
+app/build/
+android/.gradle/
+android/build/
+android/app/build/
+
+# Android output artifacts
+*.apk
+*.aab
+*.ap_
+*.dex
+output.json
+
+# Local Android SDK configuration
+local.properties
+.cxx/
+
+# IDE and Editor files
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
