@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">ClipSync</string>
+    <string name="accessibility_desc">Seamless background clipboard sync with your Linux PC.</string>
+</resources>
