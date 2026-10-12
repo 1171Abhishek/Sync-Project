@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Signed Android Release
 
 on:
   push:
@@ -20,16 +20,26 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.5"
 
-      - name: Build APK
+      - name: Build Release APK
         run: |
           cd android
-          gradle wrapper --gradle-version 8.5
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          gradle assembleRelease
 
-      - name: Upload APK
+      - name: Sign Release APK
+        uses: r0adkll/sign-android-release@v1
+        id: sign_app
+        with:
+          releaseDirectory: android/app/build/outputs/apk/release
+          signingKey: ${{ secrets.KEYSTORE_BASE64 }}
+          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
+          alias: ${{ secrets.KEY_ALIAS }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: ClipSync-Android-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: ClipSync-Release-Signed
+          path: ${{ steps.sign_app.outputs.signedFile }}
