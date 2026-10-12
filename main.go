@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.design/x/clipboard"
 )
 
 const (
@@ -31,6 +34,7 @@ type SyncNode struct {
 	mu           sync.Mutex
 	peers        map[string]net.Conn
 	peersLock    sync.Mutex
+	nativeClip   bool
 }
 
 func hashContent(s string) string {
@@ -44,28 +48,17 @@ func getHostIP(addr string) string {
 	if err != nil {
 		host = addr
 	}
-	// Strip IPv6-mapped IPv4 prefix if present
 	host = strings.TrimPrefix(host, "::ffff:")
 	return host
 }
 
-func readLocalClipboard() (string, error) {
-	if cmdExists("wl-paste") {
-		out, err := exec.Command("wl-paste", "-n").Output()
+func (n *SyncNode) writeClipboard(text string) error {
+	if n.nativeClip {
+		_, err := clipboard.Write(context.Background(), clipboard.FmtText, []byte(text))
 		if err == nil {
-			return string(out), nil
+			return nil
 		}
 	}
-	if cmdExists("xclip") {
-		out, err := exec.Command("xclip", "-selection", "clipboard", "-o").Output()
-		if err == nil {
-			return string(out), nil
-		}
-	}
-	return "", fmt.Errorf("no clipboard utility found")
-}
-
-func writeLocalClipboard(text string) error {
 	if cmdExists("wl-copy") {
 		cmd := exec.Command("wl-copy")
 		cmd.Stdin = strings.NewReader(text)
@@ -89,9 +82,16 @@ func NewSyncNode() *SyncNode {
 	if hostname == "" {
 		hostname = "device"
 	}
+
+	hasNative := false
+	if err := clipboard.Init(); err == nil {
+		hasNative = true
+	}
+
 	return &SyncNode{
-		deviceID: fmt.Sprintf("%s-%d", hostname, time.Now().Unix()%10000),
-		peers:    make(map[string]net.Conn),
+		deviceID:   fmt.Sprintf("%s-%d", hostname, time.Now().Unix()%10000),
+		peers:      make(map[string]net.Conn),
+		nativeClip: hasNative,
 	}
 }
 
@@ -124,7 +124,6 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 
 	n.peersLock.Lock()
 	if existing, exists := n.peers[hostIP]; exists && existing != nil && existing != conn {
-		// Keep the first working connection, close duplicate
 		n.peersLock.Unlock()
 		conn.Close()
 		return
@@ -160,7 +159,7 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 
 			fmt.Printf("📥 [%s] Received from %s (%d bytes): %.30s...\n",
 				time.Now().Format("15:04:05"), msg.DeviceID, len(msg.Content), strings.ReplaceAll(msg.Content, "\n", " "))
-			_ = writeLocalClipboard(msg.Content)
+			_ = n.writeClipboard(msg.Content)
 		} else {
 			n.mu.Unlock()
 		}
@@ -253,10 +252,15 @@ func (n *SyncNode) startUDPDiscovery() {
 }
 
 func (n *SyncNode) startClipboardWatcher() {
-	for {
-		text, err := readLocalClipboard()
-		if err == nil && text != "" {
+	if n.nativeClip {
+		fmt.Printf("⚡ In-Process Event Watcher Active (0%% CPU, 0 Process Forks)\n")
+		ch := clipboard.Watch(context.Background())
+		for data := range ch {
+			text := string(data.Bytes)
 			cleanText := strings.TrimSpace(text)
+			if cleanText == "" {
+				continue
+			}
 			h := hashContent(cleanText)
 
 			n.mu.Lock()
@@ -272,7 +276,34 @@ func (n *SyncNode) startClipboardWatcher() {
 				n.mu.Unlock()
 			}
 		}
-		time.Sleep(750 * time.Millisecond)
+		return
+	}
+
+	fmt.Printf("⚠️ Falling back to gentle polling\n")
+	for {
+		if cmdExists("wl-paste") {
+			out, err := exec.Command("wl-paste", "-n").Output()
+			if err == nil {
+				text := string(out)
+				cleanText := strings.TrimSpace(text)
+				if cleanText != "" {
+					h := hashContent(cleanText)
+					n.mu.Lock()
+					if cleanText != strings.TrimSpace(n.lastReceived) && h != n.lastHash {
+						n.lastHash = h
+						n.lastReceived = text
+						n.mu.Unlock()
+
+						fmt.Printf("📤 [%s] Local clipboard changed (%d bytes): %.30s...\n",
+							time.Now().Format("15:04:05"), len(text), strings.ReplaceAll(text, "\n", " "))
+						n.Broadcast(text, h)
+					} else {
+						n.mu.Unlock()
+					}
+				}
+			}
+		}
+		time.Sleep(2 * time.Second)
 	}
 }
 
