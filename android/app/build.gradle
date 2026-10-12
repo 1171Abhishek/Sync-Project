@@ -14,8 +14,22 @@ android {
         versionName "1.0"
     }
 
+    signingConfigs {
+        release {
+            if (file("release.jks").exists()) {
+                storeFile file("release.jks")
+                storePassword System.getenv("KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KEY_ALIAS")
+                keyPassword System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (file("release.jks").exists()) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
         }
     }
