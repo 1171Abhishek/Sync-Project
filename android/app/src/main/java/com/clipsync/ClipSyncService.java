@@ -1,18 +1,27 @@
 package com.clipsync;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.view.accessibility.AccessibilityEvent;
+import android.webkit.MimeTypeMap;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -23,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ClipSyncService extends AccessibilityService {
     private static final int UDP_PORT = 9876;
     private static final int TCP_PORT = 9877;
+    private static final int FILE_PORT = 9878;
     private String deviceId;
     private String lastHash = "";
     private String lastReceived = "";
@@ -56,6 +66,7 @@ public class ClipSyncService extends AccessibilityService {
         mainHandler = new Handler(Looper.getMainLooper());
 
         new Thread(this::startTcpServer).start();
+        new Thread(this::startFileServer).start();
         new Thread(this::startUdpDiscovery).start();
 
         mainHandler.post(() -> {
@@ -198,9 +209,190 @@ public class ClipSyncService extends AccessibilityService {
             }
         } catch (Exception ignored) {
         } finally {
-            // ONLY remove if this exact socket instance is still in the map!
             peers.remove(hostIp, socket);
         }
+    }
+
+    private void startFileServer() {
+        try (ServerSocket server = new ServerSocket(FILE_PORT)) {
+            while (true) {
+                Socket socket = server.accept();
+                new Thread(() -> handleIncomingFile(socket)).start();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void handleIncomingFile(Socket socket) {
+        try {
+            socket.setSoTimeout(30000);
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            String filename = null;
+            long contentLength = -1;
+
+            StringBuilder lineBuf = new StringBuilder();
+            int b;
+            while ((b = in.read()) != -1) {
+                char c = (char) b;
+                if (c == '\n') {
+                    String line = lineBuf.toString().trim();
+                    lineBuf.setLength(0);
+                    if (line.isEmpty()) {
+                        break;
+                    }
+                    String lower = line.toLowerCase();
+                    if (lower.startsWith("x-filename:")) {
+                        String raw = line.substring(line.indexOf(':') + 1).trim();
+                        try {
+                            filename = URLDecoder.decode(raw, StandardCharsets.UTF_8.name());
+                        } catch (Exception e) {
+                            filename = raw;
+                        }
+                    } else if (lower.startsWith("content-length:")) {
+                        try {
+                            contentLength = Long.parseLong(line.substring(line.indexOf(':') + 1).trim());
+                        } catch (Exception ignored) {}
+                    }
+                } else if (c != '\r') {
+                    lineBuf.append(c);
+                }
+            }
+
+            if (filename == null || filename.isEmpty()) {
+                filename = "received_" + System.currentTimeMillis();
+            }
+            if (contentLength <= 0) {
+                out.write("HTTP/1.1 400 Bad Request\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+                socket.close();
+                return;
+            }
+
+            saveFileToStorage(filename, in, contentLength);
+
+            out.write("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nOK\n".getBytes(StandardCharsets.UTF_8));
+            out.flush();
+        } catch (Exception ignored) {
+        } finally {
+            try { socket.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void saveFileToStorage(String filename, InputStream in, long contentLength) {
+        String lower = filename.toLowerCase();
+        boolean isImage = lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+                          lower.endsWith(".png") || lower.endsWith(".webp") ||
+                          lower.endsWith(".gif");
+
+        Uri itemUri = null;
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, filename);
+
+            Uri collection;
+            if (isImage) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                    values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ClipSync");
+                } else {
+                    collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                }
+                values.put(MediaStore.Images.Media.MIME_TYPE, getMimeType(filename));
+            } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                    values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/ClipSync");
+                } else {
+                    collection = MediaStore.Files.getContentUri("external");
+                }
+                values.put(MediaStore.MediaColumns.MIME_TYPE, getMimeType(filename));
+            }
+
+            itemUri = getContentResolver().insert(collection, values);
+            if (itemUri != null) {
+                try (OutputStream os = getContentResolver().openOutputStream(itemUri)) {
+                    byte[] buf = new byte[32768];
+                    long remaining = contentLength;
+                    int read;
+                    while (remaining > 0 && (read = in.read(buf, 0, (int) Math.min(buf.length, remaining))) != -1) {
+                        os.write(buf, 0, read);
+                        remaining -= read;
+                    }
+                    os.flush();
+                }
+            }
+        } catch (Exception e) {
+            try {
+                File dir = isImage ?
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES) :
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                File target = new File(dir, filename);
+                try (FileOutputStream fos = new FileOutputStream(target)) {
+                    byte[] buf = new byte[32768];
+                    long remaining = contentLength;
+                    int read;
+                    while (remaining > 0 && (read = in.read(buf, 0, (int) Math.min(buf.length, remaining))) != -1) {
+                        fos.write(buf, 0, read);
+                        remaining -= read;
+                    }
+                    fos.flush();
+                }
+                Intent scanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                scanIntent.setData(Uri.fromFile(target));
+                sendBroadcast(scanIntent);
+                itemUri = Uri.fromFile(target);
+            } catch (Exception ignored) {}
+        }
+
+        showNotification(filename, isImage, itemUri);
+    }
+
+    private void showNotification(String filename, boolean isImage, Uri itemUri) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+
+            String channelId = "clipsync_files";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                    channelId, "ClipSync Files", NotificationManager.IMPORTANCE_DEFAULT);
+                channel.setDescription("Notifications for files received from PC");
+                nm.createNotificationChannel(channel);
+            }
+
+            Notification.Builder builder;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder = new Notification.Builder(this, channelId);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+
+            builder.setSmallIcon(android.R.drawable.stat_sys_download_done)
+                   .setContentTitle("📥 " + filename)
+                   .setContentText(isImage ? "Saved to Gallery (Pictures/ClipSync)" : "Saved to Downloads/ClipSync")
+                   .setAutoCancel(true);
+
+            if (itemUri != null) {
+                Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+                viewIntent.setDataAndType(itemUri, getMimeType(filename));
+                viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                PendingIntent pi = PendingIntent.getActivity(this, (int) (System.currentTimeMillis() % 100000), viewIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0));
+                builder.setContentIntent(pi);
+            }
+
+            nm.notify((int) (System.currentTimeMillis() % 100000), builder.build());
+        } catch (Exception ignored) {}
+    }
+
+    private String getMimeType(String filename) {
+        String ext = "";
+        int i = filename.lastIndexOf('.');
+        if (i > 0) {
+            ext = filename.substring(i + 1).toLowerCase();
+        }
+        String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+        return mime != null ? mime : "application/octet-stream";
     }
 
     private void startUdpDiscovery() {

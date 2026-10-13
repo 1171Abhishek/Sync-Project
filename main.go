@@ -27,6 +27,7 @@ const (
 	UDPPort  = 9876
 	TCPPort  = 9877
 	FilePort = 9878
+	PeerFile = "/tmp/clipsync_peer"
 )
 
 type ClipboardMessage struct {
@@ -131,6 +132,14 @@ func cmdExists(cmd string) bool {
 	return err == nil
 }
 
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
 func NewSyncNode() *SyncNode {
 	hostname, _ := os.Hostname()
 	if hostname == "" {
@@ -184,6 +193,9 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 	}
 	n.peers[hostIP] = conn
 	n.peersLock.Unlock()
+
+	// Cache active peer IP for CLI tools
+	_ = os.WriteFile(PeerFile, []byte(hostIP), 0644)
 
 	fmt.Printf("⚡ Connected with peer: %s\n", hostIP)
 
@@ -420,7 +432,137 @@ func (n *SyncNode) startClipboardWatcher() {
 	}
 }
 
+func discoverPhoneIP() string {
+	// 1. Check cached peer file
+	if data, err := os.ReadFile(PeerFile); err == nil {
+		ip := strings.TrimSpace(string(data))
+		if ip != "" {
+			// Quick test connection
+			conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, FilePort), 800*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				return ip
+			}
+		}
+	}
+
+	// 2. Fallback: Quick 1.5-second UDP discovery
+	broadcastAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("255.255.255.255:%d", UDPPort))
+	if err != nil {
+		return ""
+	}
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+
+	beacon := []byte("CLIP_SYNC:ping")
+	_, _ = conn.WriteTo(beacon, broadcastAddr)
+	_ = conn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
+
+	buf := make([]byte, 1024)
+	for {
+		n, remoteAddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			break
+		}
+		msg := string(buf[:n])
+		if strings.HasPrefix(msg, "CLIP_SYNC:") {
+			ip := strings.TrimPrefix(remoteAddr.IP.String(), "::ffff:")
+			return ip
+		}
+	}
+	return ""
+}
+
+func sendFileToPhone(filePath string) {
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		fmt.Printf("❌ File not found: %s\n", filePath)
+		os.Exit(1)
+	}
+	if fileInfo.IsDir() {
+		fmt.Printf("❌ Cannot send directory: %s\n", filePath)
+		os.Exit(1)
+	}
+
+	fmt.Printf("🔍 Looking for connected phone on Wi-Fi...\n")
+	phoneIP := discoverPhoneIP()
+	if phoneIP == "" {
+		fmt.Println("❌ No phone found on local Wi-Fi!")
+		fmt.Println("👉 Make sure your phone is connected to the same Wi-Fi and ClipSync is running.")
+		sendNotification("ClipSync Send Failed", "No phone found on local Wi-Fi")
+		os.Exit(1)
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Printf("❌ Failed to open file: %v\n", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	fileName := filepath.Base(filePath)
+	sizeStr := formatSize(fileInfo.Size())
+	fmt.Printf("📤 Sending %s (%s) to Phone (%s)...\n", fileName, sizeStr, phoneIP)
+
+	urlTarget := fmt.Sprintf("http://%s:%d/upload", phoneIP, FilePort)
+	req, err := http.NewRequest("POST", urlTarget, file)
+	if err != nil {
+		fmt.Printf("❌ Failed to create request: %v\n", err)
+		os.Exit(1)
+	}
+
+	req.Header.Set("X-Filename", url.QueryEscape(fileName))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = fileInfo.Size()
+
+	client := &http.Client{
+		Timeout: 5 * time.Minute,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("❌ Upload failed: %v\n", err)
+		sendNotification("ClipSync Send Failed", fmt.Sprintf("Failed to send %s to phone", fileName))
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Printf("✓ Successfully sent %s to Phone! Saved to Gallery / Downloads.\n", fileName)
+		sendNotification("ClipSync: Sent to Phone", fmt.Sprintf("✓ %s (%s) sent to Phone", fileName, sizeStr))
+	} else {
+		fmt.Printf("⚠️ Phone responded with status: %s\n", resp.Status)
+		os.Exit(1)
+	}
+}
+
 func main() {
+	if len(os.Args) > 1 {
+		arg := os.Args[1]
+		if arg == "send" || fileExists(arg) {
+			targetFile := arg
+			if arg == "send" {
+				if len(os.Args) < 3 {
+					fmt.Println("Usage: clip-sync send <file-path>")
+					os.Exit(1)
+				}
+				targetFile = os.Args[2]
+			}
+			sendFileToPhone(targetFile)
+			return
+		}
+		if arg == "-h" || arg == "--help" {
+			fmt.Println("ClipSync - Seamless Linux <-> Android Continuity")
+			fmt.Println("Usage:")
+			fmt.Println("  clip-sync               Start background clipboard & file daemon")
+			fmt.Println("  clip-sync send <file>   Send image or file to your Phone")
+			return
+		}
+	}
+
 	node := NewSyncNode()
 	fmt.Printf("🚀 ClipSync started!\n")
 	fmt.Printf("📱 Device ID: %s\n", node.deviceID)
