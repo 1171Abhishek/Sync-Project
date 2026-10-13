@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Abhishek Kumar
+// Licensed under the GNU General Public License v3.0
+
 package main
 
 import (
@@ -6,9 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,8 +24,9 @@ import (
 )
 
 const (
-	UDPPort = 9876
-	TCPPort = 9877
+	UDPPort  = 9876
+	TCPPort  = 9877
+	FilePort = 9878
 )
 
 type ClipboardMessage struct {
@@ -50,6 +58,52 @@ func getHostIP(addr string) string {
 	}
 	host = strings.TrimPrefix(host, "::ffff:")
 	return host
+}
+
+func getDownloadsDir() string {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		downloads := filepath.Join(home, "Downloads")
+		if info, err := os.Stat(downloads); err == nil && info.IsDir() {
+			return downloads
+		}
+		return home
+	}
+	return "."
+}
+
+func getUniqueFilename(dir, baseName string) string {
+	ext := filepath.Ext(baseName)
+	nameOnly := strings.TrimSuffix(baseName, ext)
+	target := filepath.Join(dir, baseName)
+
+	counter := 1
+	for {
+		if _, err := os.Stat(target); os.IsNotExist(err) {
+			return target
+		}
+		target = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", nameOnly, counter, ext))
+		counter++
+	}
+}
+
+func formatSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func sendNotification(title, message string) {
+	if cmdExists("notify-send") {
+		_ = exec.Command("notify-send", "-a", "ClipSync", "-i", "document-save", title, message).Run()
+	}
 }
 
 func (n *SyncNode) writeClipboard(text string) error {
@@ -182,6 +236,65 @@ func (n *SyncNode) startTCPServer() {
 	}
 }
 
+func (n *SyncNode) startFileServer() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		rawFilename := r.Header.Get("X-Filename")
+		if decoded, err := url.QueryUnescape(rawFilename); err == nil && decoded != "" {
+			rawFilename = decoded
+		}
+		if rawFilename == "" {
+			rawFilename = fmt.Sprintf("received_%d", time.Now().Unix())
+		}
+		safeFilename := filepath.Base(filepath.Clean(rawFilename))
+		if safeFilename == "." || safeFilename == "/" {
+			safeFilename = fmt.Sprintf("file_%d", time.Now().Unix())
+		}
+
+		downloadsDir := getDownloadsDir()
+		destPath := getUniqueFilename(downloadsDir, safeFilename)
+
+		out, err := os.Create(destPath)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer out.Close()
+
+		nBytes, err := io.Copy(out, r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		sizeStr := formatSize(nBytes)
+		finalName := filepath.Base(destPath)
+		fmt.Printf("📥 [%s] Received file from %s: %s (%s) -> %s\n",
+			time.Now().Format("15:04:05"), getHostIP(r.RemoteAddr), finalName, sizeStr, destPath)
+
+		sendNotification("ClipSync: File Received", fmt.Sprintf("📥 %s (%s)\nSaved to Downloads", finalName, sizeStr))
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK\n"))
+	})
+
+	server := &http.Server{
+		Addr:         fmt.Sprintf("0.0.0.0:%d", FilePort),
+		Handler:      mux,
+		ReadTimeout:  10 * time.Minute,
+		WriteTimeout: 10 * time.Minute,
+	}
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Printf("⚠️ File server warning: %v\n", err)
+	}
+}
+
 func (n *SyncNode) connectToPeer(ip string) {
 	cleanIP := strings.TrimPrefix(ip, "::ffff:")
 	n.peersLock.Lock()
@@ -311,9 +424,11 @@ func main() {
 	node := NewSyncNode()
 	fmt.Printf("🚀 ClipSync started!\n")
 	fmt.Printf("📱 Device ID: %s\n", node.deviceID)
-	fmt.Printf("📡 Ready to sync.\n")
+	fmt.Printf("📡 Clipboard Sync listening on TCP :%d\n", TCPPort)
+	fmt.Printf("📁 File Drop receiver listening on HTTP :%d (saving to %s)\n", FilePort, getDownloadsDir())
 
 	go node.startTCPServer()
+	go node.startFileServer()
 	go node.startUDPDiscovery()
 
 	node.startClipboardWatcher()

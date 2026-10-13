@@ -4,10 +4,10 @@ import android.accessibilityservice.AccessibilityService;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityNodeInfo;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -17,6 +17,7 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ClipSyncService extends AccessibilityService {
@@ -25,13 +26,31 @@ public class ClipSyncService extends AccessibilityService {
     private String deviceId;
     private String lastHash = "";
     private String lastReceived = "";
-    private final ConcurrentHashMap<String, Socket> peers = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, Socket> peers = new ConcurrentHashMap<>();
+    private static volatile String lastPeerIp = null;
+    private static volatile ClipSyncService instance = null;
     private ClipboardManager clipboard;
     private Handler mainHandler;
+
+    public static Set<String> getActivePeers() {
+        return peers.keySet();
+    }
+
+    public static String getLastPeerIp() {
+        return lastPeerIp;
+    }
+
+    public static void broadcastText(String text) {
+        ClipSyncService service = instance;
+        if (service != null) {
+            service.processAndBroadcast(text);
+        }
+    }
 
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         deviceId = "android-" + (System.currentTimeMillis() % 10000);
         clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         mainHandler = new Handler(Looper.getMainLooper());
@@ -44,6 +63,14 @@ public class ClipSyncService extends AccessibilityService {
                 clipboard.addPrimaryClipChangedListener(this::checkClipboard);
             }
         });
+    }
+
+    @Override
+    public void onDestroy() {
+        if (instance == this) {
+            instance = null;
+        }
+        super.onDestroy();
     }
 
     @Override
@@ -134,6 +161,12 @@ public class ClipSyncService extends AccessibilityService {
 
     private void handlePeer(Socket socket) {
         String hostIp = socket.getInetAddress().getHostAddress();
+        lastPeerIp = hostIp;
+        try {
+            SharedPreferences prefs = getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
+            prefs.edit().putString("last_peer_ip", hostIp).apply();
+        } catch (Exception ignored) {}
+
         Socket old = peers.put(hostIp, socket);
         if (old != null && old != socket && !old.isClosed()) {
             try { old.close(); } catch (Exception ignored) {}
