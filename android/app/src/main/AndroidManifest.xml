@@ -12,6 +12,7 @@
         android:allowBackup="true"
         android:label="ClipSync"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity
