@@ -74,19 +74,12 @@ public class ShareActivity extends Activity {
         if (text != null && !text.trim().isEmpty()) {
             String url = extractUrl(text);
             if (url != null) {
-                try {
-                    JSONObject obj = new JSONObject();
-                    obj.put("type", "url");
-                    obj.put("url", url);
-                    obj.put("content", text);
-                    ClipSyncService.broadcastJson(obj);
-                    Toast.makeText(this, "🌐 Opening tab on PC...", Toast.LENGTH_SHORT).show();
-                } catch (Exception ignored) {}
+                sendUrl(url, text);
             } else {
                 ClipSyncService.broadcastText(text);
                 Toast.makeText(this, "✓ Copied to PC clipboard!", Toast.LENGTH_SHORT).show();
+                finish();
             }
-            finish();
             return;
         }
 
@@ -141,35 +134,121 @@ public class ShareActivity extends Activity {
         finish();
     }
 
+    private void sendUrl(String url, String text) {
+        Toast.makeText(this, "🌐 Opening tab on PC...", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                JSONObject obj = new JSONObject();
+                obj.put("type", "url");
+                obj.put("url", url);
+                obj.put("content", text);
+                obj.put("device_id", "android-share");
+
+                // 1. Try active peer connections from ClipSyncService
+                ClipSyncService.broadcastJson(this, obj);
+
+                if (!ClipSyncService.getActivePeers().isEmpty()) {
+                    return;
+                }
+
+                // 2. Direct standalone fallback if ClipSyncService is idle or disconnected
+                Set<String> targets = getTargetIps();
+                byte[] secretKey = CryptoUtils.getSecretKey(this);
+                String wireString;
+                if (secretKey != null) {
+                    String payload = CryptoUtils.encrypt(obj.toString(), secretKey);
+                    if (payload != null) {
+                        JSONObject enc = new JSONObject();
+                        enc.put("type", "encrypted");
+                        enc.put("device_id", "android-share");
+                        enc.put("payload", payload);
+                        wireString = enc.toString() + "\n";
+                    } else {
+                        wireString = obj.toString() + "\n";
+                    }
+                } else {
+                    wireString = obj.toString() + "\n";
+                }
+                byte[] bytes = wireString.getBytes(StandardCharsets.UTF_8);
+
+                for (String ip : targets) {
+                    try (Socket s = new Socket()) {
+                        s.connect(new InetSocketAddress(ip, 9877), 2500);
+                        OutputStream out = s.getOutputStream();
+                        out.write(bytes);
+                        out.flush();
+                        break;
+                    } catch (Exception ignored) {}
+                }
+            } catch (Exception ignored) {}
+        }).start();
+        finish();
+    }
+
     private Set<String> getTargetIps() {
-        Set<String> ips = new HashSet<>(ClipSyncService.getActivePeers());
+        Set<String> ips = new HashSet<>();
+        for (String peer : ClipSyncService.getActivePeers()) {
+            if (peer != null) {
+                String clean = peer.replaceFirst("^::ffff:", "");
+                if (!CryptoUtils.isLocalIp(clean)) {
+                    ips.add(clean);
+                }
+            }
+        }
         if (!ips.isEmpty()) return ips;
 
         SharedPreferences prefs = getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
         String cached = prefs.getString("last_peer_ip", null);
-        if (cached != null && !cached.trim().isEmpty()) {
-            ips.add(cached.trim());
-            return ips;
+        if (cached != null) {
+            cached = cached.trim().replaceFirst("^::ffff:", "");
+            if (!CryptoUtils.isLocalIp(cached)) {
+                // Quickly test if cached peer is still responsive
+                try (Socket test = new Socket()) {
+                    test.connect(new InetSocketAddress(cached, 9877), 400);
+                    ips.add(cached);
+                    return ips;
+                } catch (Exception ignored) {}
+                try (Socket test = new Socket()) {
+                    test.connect(new InetSocketAddress(cached, FILE_PORT), 400);
+                    ips.add(cached);
+                    return ips;
+                } catch (Exception ignored) {}
+            }
         }
 
         // Active UDP probe to find PC
         try (DatagramSocket socket = new DatagramSocket()) {
             socket.setBroadcast(true);
-            socket.setSoTimeout(1200);
+            socket.setSoTimeout(1500);
             byte[] beacon = "CLIP_SYNC:probe".getBytes(StandardCharsets.UTF_8);
             InetAddress bcast = InetAddress.getByName("255.255.255.255");
             socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
 
             byte[] buf = new byte[1024];
-            DatagramPacket packet = new DatagramPacket(buf, buf.length);
-            try {
-                socket.receive(packet);
-                String peerIp = packet.getAddress().getHostAddress();
-                if (peerIp != null) {
-                    ips.add(peerIp);
-                }
-            } catch (Exception ignored) {}
+            long deadline = System.currentTimeMillis() + 1500;
+            while (System.currentTimeMillis() < deadline) {
+                DatagramPacket packet = new DatagramPacket(buf, buf.length);
+                try {
+                    socket.receive(packet);
+                    String peerIp = packet.getAddress().getHostAddress();
+                    if (peerIp != null) {
+                        peerIp = peerIp.replaceFirst("^::ffff:", "");
+                        if (!CryptoUtils.isLocalIp(peerIp)) {
+                            ips.add(peerIp);
+                            prefs.edit().putString("last_peer_ip", peerIp).apply();
+                            break;
+                        }
+                    }
+                } catch (SocketTimeoutException e) {
+                    break;
+                } catch (Exception ignored) {}
+            }
         } catch (Exception ignored) {}
+
+        // Fallback to non-local cached IP if broadcast was filtered by router
+        if (ips.isEmpty() && cached != null && !CryptoUtils.isLocalIp(cached)) {
+            ips.add(cached);
+        }
 
         return ips;
     }
@@ -242,11 +321,7 @@ public class ShareActivity extends Activity {
             conn.setRequestProperty("X-ClipSync-Auth", authToken);
             conn.setRequestProperty("X-ClipSync-Time", String.valueOf(now));
 
-            if (size > 0 && size < Integer.MAX_VALUE) {
-                conn.setFixedLengthStreamingMode((int) size);
-            } else {
-                conn.setChunkedStreamingMode(32768);
-            }
+            conn.setChunkedStreamingMode(32768);
 
             try (InputStream in = getContentResolver().openInputStream(uri);
                  OutputStream out = conn.getOutputStream()) {

@@ -164,15 +164,21 @@ func (c *CryptoManager) GenerateAuthToken(filename string, timestamp int64) stri
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// VerifyAuthToken validates the file transfer HMAC token within a 5-minute window
+// VerifyAuthToken validates the file transfer HMAC token within a 15-minute window
 func (c *CryptoManager) VerifyAuthToken(filename, token string, timestamp int64) bool {
 	if token == "" || len(c.key) != 32 {
 		return false
 	}
 	now := time.Now().Unix()
-	if timestamp < now-300 || timestamp > now+300 {
+	if timestamp < now-900 || timestamp > now+900 {
 		return false
 	}
-	expected := c.GenerateAuthToken(filename, timestamp)
-	return hmac.Equal([]byte(expected), []byte(token))
+	if hmac.Equal([]byte(c.GenerateAuthToken(filename, timestamp)), []byte(token)) {
+		return true
+	}
+	clean := filepath.Base(filename)
+	if clean != filename && hmac.Equal([]byte(c.GenerateAuthToken(clean, timestamp)), []byte(token)) {
+		return true
+	}
+	return false
 }

@@ -4,7 +4,10 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Base64;
 import java.nio.charset.StandardCharsets;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.security.MessageDigest;
+import java.util.Collections;
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.GCMParameterSpec;
@@ -113,10 +116,49 @@ public class CryptoUtils {
     public static boolean verifyAuthToken(String filename, String token, long timestamp, byte[] key) {
         if (key == null || token == null || token.isEmpty()) return false;
         long now = System.currentTimeMillis() / 1000L;
-        if (timestamp < now - 300 || timestamp > now + 300) {
+        if (timestamp < now - 900 || timestamp > now + 900) {
             return false;
         }
         String expected = generateAuthToken(filename, timestamp, key);
-        return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8));
+        if (MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8))) {
+            return true;
+        }
+        if (filename != null) {
+            int slash = filename.lastIndexOf('/');
+            if (slash >= 0 && slash < filename.length() - 1) {
+                String base = filename.substring(slash + 1);
+                String expBase = generateAuthToken(base, timestamp, key);
+                return MessageDigest.isEqual(expBase.getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8));
+            }
+        }
+        return false;
+    }
+
+    public static boolean isLocalIp(String ip) {
+        if (ip == null || ip.trim().isEmpty()) return true;
+        String clean = ip.trim().replaceFirst("^::ffff:", "");
+        if (clean.equals("127.0.0.1") || clean.equals("::1") || clean.equalsIgnoreCase("localhost") || clean.equals("0.0.0.0")) {
+            return true;
+        }
+        try {
+            InetAddress addr = InetAddress.getByName(clean);
+            if (addr.isLoopbackAddress() || addr.isAnyLocalAddress()) {
+                return true;
+            }
+            for (NetworkInterface iface : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                for (InetAddress ifaceAddr : Collections.list(iface.getInetAddresses())) {
+                    String host = ifaceAddr.getHostAddress();
+                    if (host != null) {
+                        host = host.replaceFirst("^::ffff:", "");
+                        int pct = host.indexOf("%");
+                        if (pct >= 0) host = host.substring(0, pct);
+                        if (host.equalsIgnoreCase(clean)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 }

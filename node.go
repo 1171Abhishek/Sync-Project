@@ -90,6 +90,10 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 		_ = tcpConn.SetNoDelay(true)
 	}
 	hostIP := getHostIP(conn.RemoteAddr().String())
+	if isLocalIP(hostIP) {
+		conn.Close()
+		return
+	}
 
 	n.peersLock.Lock()
 	if existing, exists := n.peers[hostIP]; exists && existing != nil && existing != conn {
@@ -195,6 +199,9 @@ func (n *SyncNode) startTCPServer() {
 
 func (n *SyncNode) connectToPeer(ip string) {
 	cleanIP := strings.TrimPrefix(ip, "::ffff:")
+	if isLocalIP(cleanIP) {
+		return
+	}
 	n.peersLock.Lock()
 	if _, exists := n.peers[cleanIP]; exists {
 		n.peersLock.Unlock()
@@ -275,7 +282,7 @@ func (n *SyncNode) startReconnectWatchdog() {
 		if peerCount == 0 {
 			if data, err := os.ReadFile(PeerFile); err == nil {
 				lastIP := strings.TrimSpace(string(data))
-				if lastIP != "" {
+				if lastIP != "" && !isLocalIP(lastIP) {
 					n.connectToPeer(lastIP)
 				}
 			}

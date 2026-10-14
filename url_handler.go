@@ -123,59 +123,61 @@ func sendClipboardLinkToPhone() {
 	var targetURL string
 	var fromPrimary bool
 
-	// 1. Priority 1: Check Primary Selection (what the user actively highlighted on screen right now with mouse)
+	// 1. Priority 1: Check Standard Clipboard (what the user actively copied via Ctrl+C, Ctrl+L, or Copy Link)
 	if cmdExists("wl-paste") {
 		ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "wl-paste", "-p", "-n")
+		cmd := exec.CommandContext(ctx, "wl-paste", "-n")
 		if out, err := cmd.Output(); err == nil {
-			if u := extractURL(string(out)); u != "" {
-				targetURL = u
-				fromPrimary = true
-			}
-		}
-	}
-	if targetURL == "" && cmdExists("xclip") {
-		ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "xclip", "-selection", "primary", "-o")
-		if out, err := cmd.Output(); err == nil {
-			if u := extractURL(string(out)); u != "" {
-				targetURL = u
-				fromPrimary = true
-			}
+			targetURL = extractURL(string(out))
 		}
 	}
 
-	// 2. Priority 2: Check Standard Clipboard (Ctrl+C / Right Click -> Copy Link)
+	if targetURL == "" {
+		_ = clipboard.Init()
+		if data, err := clipboard.Read(context.Background(), clipboard.FmtText); err == nil && len(data) > 0 {
+			targetURL = extractURL(string(data))
+		}
+	}
+
+	if targetURL == "" && cmdExists("xclip") {
+		ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-o")
+		if out, err := cmd.Output(); err == nil {
+			targetURL = extractURL(string(out))
+		}
+	}
+
+	// 2. Priority 2: Fallback to Primary Selection (mouse highlight) only if clipboard has no link
 	if targetURL == "" {
 		if cmdExists("wl-paste") {
 			ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, "wl-paste", "-n")
+			cmd := exec.CommandContext(ctx, "wl-paste", "-p", "-n")
 			if out, err := cmd.Output(); err == nil {
-				targetURL = extractURL(string(out))
+				if u := extractURL(string(out)); u != "" {
+					targetURL = u
+					fromPrimary = true
+				}
 			}
 		}
-
-		if targetURL == "" {
-			_ = clipboard.Init()
-			if data, err := clipboard.Read(context.Background(), clipboard.FmtText); err == nil && len(data) > 0 {
-				targetURL = extractURL(string(data))
-			}
-		}
-
 		if targetURL == "" && cmdExists("xclip") {
 			ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-o")
+			cmd := exec.CommandContext(ctx, "xclip", "-selection", "primary", "-o")
 			if out, err := cmd.Output(); err == nil {
-				targetURL = extractURL(string(out))
+				if u := extractURL(string(out)); u != "" {
+					targetURL = u
+					fromPrimary = true
+				}
 			}
 		}
 	}
 
 	if targetURL == "" {
+		fmt.Println("⚠️ No URL found in clipboard or mouse selection.")
+		fmt.Println("👉 To send a tab: In Chrome press Ctrl+L then Ctrl+C, or highlight the link with mouse, then press Ctrl+Alt+P")
 		sendDesktopNotification(
 			"⚠️ No Link Found",
 			"To send a tab: In Chrome press Ctrl+L then Ctrl+C, or highlight the link with mouse, then press Ctrl+Alt+P",

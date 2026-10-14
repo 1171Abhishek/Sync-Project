@@ -108,7 +108,7 @@ public class ClipSyncService extends AccessibilityService {
                     try {
                         SharedPreferences prefs = context.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
                         String lastIp = prefs.getString("last_peer_ip", null);
-                        if (lastIp != null && !lastIp.isEmpty()) {
+                        if (lastIp != null && !lastIp.isEmpty() && !CryptoUtils.isLocalIp(lastIp)) {
                             Socket s = new Socket();
                             s.connect(new InetSocketAddress(lastIp, TCP_PORT), 2000);
                             s.setKeepAlive(true);
@@ -591,6 +591,11 @@ public class ClipSyncService extends AccessibilityService {
 
     private void handlePeer(Socket socket) {
         String hostIp = socket.getInetAddress().getHostAddress();
+        if (hostIp != null) hostIp = hostIp.replaceFirst("^::ffff:", "");
+        if (CryptoUtils.isLocalIp(hostIp)) {
+            try { socket.close(); } catch (Exception ignored) {}
+            return;
+        }
         lastPeerIp = hostIp;
         try {
             SharedPreferences prefs = getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
@@ -602,10 +607,12 @@ public class ClipSyncService extends AccessibilityService {
             socket.setTcpNoDelay(true);
         } catch (Exception ignored) {}
 
-        Socket old = peers.put(hostIp, socket);
-        if (old != null && old != socket && !old.isClosed()) {
-            try { old.close(); } catch (Exception ignored) {}
+        Socket existing = peers.get(hostIp);
+        if (existing != null && !existing.isClosed() && existing.isConnected() && existing != socket) {
+            try { socket.close(); } catch (Exception ignored) {}
+            return;
         }
+        peers.put(hostIp, socket);
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
@@ -746,7 +753,8 @@ public class ClipSyncService extends AccessibilityService {
             byte[] secretKey = CryptoUtils.getSecretKey(this);
             if (secretKey != null) {
                 if (authHeader == null || !CryptoUtils.verifyAuthToken(filename, authHeader, timestamp, secretKey)) {
-                    out.write("HTTP/1.1 401 Unauthorized\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+                    out.write("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+                    out.flush();
                     socket.close();
                     return;
                 }
@@ -754,11 +762,6 @@ public class ClipSyncService extends AccessibilityService {
 
             if (filename == null || filename.isEmpty()) {
                 filename = "received_" + System.currentTimeMillis();
-            }
-            if (contentLength <= 0) {
-                out.write("HTTP/1.1 400 Bad Request\r\n\r\n".getBytes(StandardCharsets.UTF_8));
-                socket.close();
-                return;
             }
 
             saveFileToStorage(filename, in, contentLength);
@@ -805,11 +808,18 @@ public class ClipSyncService extends AccessibilityService {
             if (itemUri != null) {
                 try (OutputStream os = getContentResolver().openOutputStream(itemUri)) {
                     byte[] buf = new byte[32768];
-                    long remaining = contentLength;
-                    int read;
-                    while (remaining > 0 && (read = in.read(buf, 0, (int) Math.min(buf.length, remaining))) != -1) {
-                        os.write(buf, 0, read);
-                        remaining -= read;
+                    if (contentLength > 0) {
+                        long remaining = contentLength;
+                        int read;
+                        while (remaining > 0 && (read = in.read(buf, 0, (int) Math.min(buf.length, remaining))) != -1) {
+                            os.write(buf, 0, read);
+                            remaining -= read;
+                        }
+                    } else {
+                        int read;
+                        while ((read = in.read(buf)) != -1) {
+                            os.write(buf, 0, read);
+                        }
                     }
                     os.flush();
                 }
@@ -819,14 +829,24 @@ public class ClipSyncService extends AccessibilityService {
                 File dir = isImage ?
                     Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES) :
                     Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (dir != null && !dir.exists()) {
+                    dir.mkdirs();
+                }
                 File target = new File(dir, filename);
                 try (FileOutputStream fos = new FileOutputStream(target)) {
                     byte[] buf = new byte[32768];
-                    long remaining = contentLength;
-                    int read;
-                    while (remaining > 0 && (read = in.read(buf, 0, (int) Math.min(buf.length, remaining))) != -1) {
-                        fos.write(buf, 0, read);
-                        remaining -= read;
+                    if (contentLength > 0) {
+                        long remaining = contentLength;
+                        int read;
+                        while (remaining > 0 && (read = in.read(buf, 0, (int) Math.min(buf.length, remaining))) != -1) {
+                            fos.write(buf, 0, read);
+                            remaining -= read;
+                        }
+                    } else {
+                        int read;
+                        while ((read = in.read(buf)) != -1) {
+                            fos.write(buf, 0, read);
+                        }
                     }
                     fos.flush();
                 }
@@ -912,11 +932,27 @@ public class ClipSyncService extends AccessibilityService {
                     while (true) {
                         DatagramPacket packet = new DatagramPacket(buf, buf.length);
                         socket.receive(packet);
+                        String peerIp = packet.getAddress().getHostAddress();
+                        if (peerIp != null) peerIp = peerIp.replaceFirst("^::ffff:", "");
+                        if (CryptoUtils.isLocalIp(peerIp)) {
+                            continue;
+                        }
+
                         String msg = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
+
+                        // If probe or ping, reply immediately with device ID so PC can discover phone instantly
+                        if (msg.startsWith("CLIP_SYNC:probe") || msg.startsWith("CLIP_SYNC:ping")) {
+                            try (DatagramSocket replySock = new DatagramSocket()) {
+                                byte[] reply = ("CLIP_SYNC:" + deviceId).getBytes(StandardCharsets.UTF_8);
+                                replySock.send(new DatagramPacket(reply, reply.length, packet.getSocketAddress()));
+                            } catch (Exception ignored) {}
+                            continue;
+                        }
+
                         if (msg.startsWith("CLIP_SYNC:") && !msg.endsWith(deviceId)) {
-                            String peerIp = packet.getAddress().getHostAddress();
-                            if (!peers.containsKey(peerIp)) {
-                                new Thread(() -> connectToPeer(peerIp)).start();
+                            final String finalIp = peerIp;
+                            if (!peers.containsKey(finalIp)) {
+                                new Thread(() -> connectToPeer(finalIp)).start();
                             }
                         }
                     }
@@ -928,10 +964,14 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void connectToPeer(String ip) {
+        if (ip == null || ip.trim().isEmpty()) return;
+        String cleanIp = ip.replaceFirst("^::ffff:", "");
+        if (CryptoUtils.isLocalIp(cleanIp)) return;
         try {
-            if (peers.containsKey(ip)) return;
-            Socket socket = new Socket(ip, TCP_PORT);
-            handlePeer(socket);
+            Socket existing = peers.get(cleanIp);
+            if (existing != null && !existing.isClosed() && existing.isConnected()) return;
+            Socket socket = new Socket(cleanIp, TCP_PORT);
+            new Thread(() -> handlePeer(socket)).start();
         } catch (Exception ignored) {}
     }
 

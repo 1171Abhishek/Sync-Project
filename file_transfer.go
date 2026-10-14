@@ -185,6 +185,7 @@ func sendFileToPhone(filePath string) {
 		sendDesktopNotification("ClipSync: Sent to Phone", fmt.Sprintf("✓ %s (%s) sent to Phone", fileName, sizeStr), "document-save", "normal")
 	} else {
 		fmt.Printf("⚠️ Phone responded with status: %s\n", resp.Status)
+		sendDesktopNotification("ClipSync Send Failed", fmt.Sprintf("Phone returned %s while sending %s", resp.Status, fileName), "dialog-warning", "normal")
 		os.Exit(1)
 	}
 }
