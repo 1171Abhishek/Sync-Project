@@ -113,11 +113,12 @@ func (n *SyncNode) startFileServer() {
 }
 
 func sendFileOrURLToPhone(target string) {
-	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-		sendURLToPhone(target)
+	clean := strings.TrimSpace(target)
+	if strings.HasPrefix(clean, "http://") || strings.HasPrefix(clean, "https://") || strings.HasPrefix(clean, "www.") || (!fileExists(clean) && strings.Contains(clean, ".")) {
+		sendURLToPhone(clean)
 		return
 	}
-	sendFileToPhone(target)
+	sendFileToPhone(clean)
 }
 
 func sendFileToPhone(filePath string) {

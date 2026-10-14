@@ -607,12 +607,12 @@ public class ClipSyncService extends AccessibilityService {
             socket.setTcpNoDelay(true);
         } catch (Exception ignored) {}
 
+        boolean isPrimary = false;
         Socket existing = peers.get(hostIp);
-        if (existing != null && !existing.isClosed() && existing.isConnected() && existing != socket) {
-            try { socket.close(); } catch (Exception ignored) {}
-            return;
+        if (existing == null || existing.isClosed() || !existing.isConnected()) {
+            peers.put(hostIp, socket);
+            isPrimary = true;
         }
-        peers.put(hostIp, socket);
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
@@ -650,11 +650,30 @@ public class ClipSyncService extends AccessibilityService {
                         url = obj.optString("content");
                     }
                     if (url != null && !url.trim().isEmpty()) {
-                        final String targetUrl = url.trim();
+                        String rawUrl = url.trim();
+                        if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
+                            rawUrl = "https://" + rawUrl;
+                        }
+                        final String targetUrl = rawUrl;
+
+                        // 1. Copy URL to phone clipboard
+                        mainHandler.post(() -> {
+                            try {
+                                if (clipboard != null) {
+                                    ClipData clip = ClipData.newPlainText("ClipSync", targetUrl);
+                                    clipboard.setPrimaryClip(clip);
+                                }
+                            } catch (Exception ignored) {}
+                        });
+
+                        // 2. High-priority Heads-up Notification (bypasses Android 10-14 background activity start restrictions)
+                        showUrlNotification(targetUrl);
+
+                        // 3. Attempt direct browser launch
                         mainHandler.post(() -> {
                             try {
                                 Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl));
-                                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
+                                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                                 browserIntent.putExtra(android.provider.Browser.EXTRA_APPLICATION_ID, getPackageName());
                                 browserIntent.putExtra("create_new_tab", true);
                                 startActivity(browserIntent);
@@ -688,7 +707,10 @@ public class ClipSyncService extends AccessibilityService {
             }
         } catch (Exception ignored) {
         } finally {
-            peers.remove(hostIp, socket);
+            if (isPrimary) {
+                peers.remove(hostIp, socket);
+            }
+            try { socket.close(); } catch (Exception ignored) {}
         }
     }
 
@@ -893,6 +915,53 @@ public class ClipSyncService extends AccessibilityService {
                     PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0));
                 builder.setContentIntent(pi);
             }
+
+            nm.notify((int) (System.currentTimeMillis() % 100000), builder.build());
+        } catch (Exception ignored) {}
+    }
+
+    private void showUrlNotification(String targetUrl) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+
+            String channelId = "clipsync_urls";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                    channelId, "ClipSync Web Links", NotificationManager.IMPORTANCE_HIGH);
+                channel.setDescription("Notifications when a web page is sent from PC");
+                channel.enableVibration(true);
+                nm.createNotificationChannel(channel);
+            }
+
+            Notification.Builder builder;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder = new Notification.Builder(this, channelId);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+
+            Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl));
+            browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                flags |= PendingIntent.FLAG_IMMUTABLE;
+            }
+            PendingIntent pi = PendingIntent.getActivity(this, (int) (System.currentTimeMillis() % 100000), browserIntent, flags);
+
+            builder.setSmallIcon(android.R.drawable.ic_menu_compass)
+                   .setContentTitle("🌐 Web Page Received")
+                   .setContentText(targetUrl)
+                   .setContentIntent(pi)
+                   .setAutoCancel(true);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                builder.setPriority(Notification.PRIORITY_HIGH);
+            }
+
+            Notification.Action openAction = new Notification.Action.Builder(
+                android.R.drawable.ic_menu_view, "Open in Browser", pi).build();
+            builder.addAction(openAction);
 
             nm.notify((int) (System.currentTimeMillis() % 100000), builder.build());
         } catch (Exception ignored) {}

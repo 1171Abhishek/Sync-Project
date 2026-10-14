@@ -37,7 +37,7 @@ func main() {
 			return
 		}
 
-		if arg == "send" || fileExists(arg) || strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://") {
+		if arg == "send" || fileExists(arg) || strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://") || strings.HasPrefix(arg, "www.") {
 			targetFile := arg
 			if arg == "send" {
 				if len(os.Args) < 3 {

@@ -17,10 +17,22 @@ import (
 	"golang.design/x/clipboard"
 )
 
-// extractURL finds the first http:// or https:// URL in a text string
+// extractURL finds the first http:// or https:// URL or domain-like string in text
 func extractURL(text string) string {
 	re := regexp.MustCompile(`https?://[^\s<>"{}|\\^` + "`" + `]+`)
-	return re.FindString(text)
+	if match := re.FindString(text); match != "" {
+		return match
+	}
+	clean := strings.TrimSpace(text)
+	if strings.HasPrefix(clean, "www.") {
+		return "https://" + clean
+	}
+	// Check standard domain pattern like google.com or domain.tld/path
+	domainRe := regexp.MustCompile(`(?i)^[a-z0-9-]+(\.[a-z0-9-]+)+(/[^\s]*)?$`)
+	if domainRe.MatchString(clean) && !fileExists(clean) {
+		return "https://" + clean
+	}
+	return ""
 }
 
 // openBrowserTab launches the default browser with the URL in a new tab
@@ -65,7 +77,10 @@ func (n *SyncNode) handleURL(msg SyncMessage) {
 func sendURLToPhone(urlStr string) {
 	cleanURL := extractURL(urlStr)
 	if cleanURL == "" {
-		cleanURL = urlStr
+		cleanURL = strings.TrimSpace(urlStr)
+		if !strings.HasPrefix(cleanURL, "http://") && !strings.HasPrefix(cleanURL, "https://") {
+			cleanURL = "https://" + cleanURL
+		}
 	}
 
 	fmt.Printf("🔍 Looking for connected phone on Wi-Fi...\n")
@@ -114,6 +129,9 @@ func sendURLToPhone(urlStr string) {
 		sendDesktopNotification("ClipSync Send Failed", fmt.Sprintf("Failed to send URL: %v", err), "dialog-warning", "normal")
 		os.Exit(1)
 	}
+
+	// Flush delay so OS TCP stack delivers data before socket close
+	time.Sleep(150 * time.Millisecond)
 
 	fmt.Printf("✓ Sent link to Phone (%s)! Opened in browser: %s\n", phoneIP, cleanURL)
 	sendDesktopNotification("🌐 Opening Tab on Phone", cleanURL, "web-browser", "normal")
