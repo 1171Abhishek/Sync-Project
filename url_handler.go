@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.design/x/clipboard"
 )
 
 // extractURL finds the first http:// or https:// URL in a text string
@@ -60,6 +63,11 @@ func (n *SyncNode) handleURL(msg SyncMessage) {
 }
 
 func sendURLToPhone(urlStr string) {
+	cleanURL := extractURL(urlStr)
+	if cleanURL == "" {
+		cleanURL = urlStr
+	}
+
 	fmt.Printf("🔍 Looking for connected phone on Wi-Fi...\n")
 	phoneIP := discoverPhoneIP()
 	if phoneIP == "" {
@@ -72,6 +80,7 @@ func sendURLToPhone(urlStr string) {
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", phoneIP, TCPPort), 3*time.Second)
 	if err != nil {
 		fmt.Printf("❌ Failed to connect to phone at %s:%d: %v\n", phoneIP, TCPPort, err)
+		sendDesktopNotification("ClipSync Send Failed", fmt.Sprintf("Failed to connect to phone: %v", err), "dialog-warning", "normal")
 		os.Exit(1)
 	}
 	defer conn.Close()
@@ -79,8 +88,8 @@ func sendURLToPhone(urlStr string) {
 	msg := SyncMessage{
 		Type:      "url",
 		DeviceID:  "linux-cli",
-		URL:       urlStr,
-		Content:   urlStr,
+		URL:       cleanURL,
+		Content:   cleanURL,
 		Timestamp: time.Now().Unix(),
 	}
 	data, _ := json.Marshal(msg)
@@ -89,9 +98,53 @@ func sendURLToPhone(urlStr string) {
 	_, err = conn.Write(data)
 	if err != nil {
 		fmt.Printf("❌ Failed to send URL to phone: %v\n", err)
+		sendDesktopNotification("ClipSync Send Failed", fmt.Sprintf("Failed to send URL: %v", err), "dialog-warning", "normal")
 		os.Exit(1)
 	}
 
-	fmt.Printf("✓ Sent link to Phone (%s)! Opened in browser.\n", phoneIP)
-	sendDesktopNotification("ClipSync: Link Sent", fmt.Sprintf("Opened %s on Phone", urlStr), "web-browser", "normal")
+	fmt.Printf("✓ Sent link to Phone (%s)! Opened in browser: %s\n", phoneIP, cleanURL)
+	sendDesktopNotification("🌐 Opening Tab on Phone", cleanURL, "web-browser", "normal")
+}
+
+func sendClipboardLinkToPhone() {
+	var candidateText string
+
+	// 1. Native clipboard
+	if data, err := clipboard.Read(context.Background(), clipboard.FmtText); err == nil && len(data) > 0 {
+		candidateText = string(data)
+	}
+
+	// 2. wl-paste standard clipboard
+	if extractURL(candidateText) == "" && cmdExists("wl-paste") {
+		if out, err := exec.Command("wl-paste", "-n").Output(); err == nil {
+			candidateText = string(out)
+		}
+	}
+
+	// 3. wl-paste primary selection (highlighted text with mouse)
+	if extractURL(candidateText) == "" && cmdExists("wl-paste") {
+		if out, err := exec.Command("wl-paste", "-p", "-n").Output(); err == nil {
+			candidateText = string(out)
+		}
+	}
+
+	// 4. xclip fallback
+	if extractURL(candidateText) == "" && cmdExists("xclip") {
+		if out, err := exec.Command("xclip", "-selection", "clipboard", "-o").Output(); err == nil {
+			candidateText = string(out)
+		}
+	}
+
+	urlStr := extractURL(candidateText)
+	if urlStr == "" {
+		sendDesktopNotification(
+			"⚠️ No Link Found in Clipboard",
+			"Copy a link first (Ctrl+C), then press Ctrl+Alt+P",
+			"dialog-warning",
+			"normal",
+		)
+		return
+	}
+
+	sendURLToPhone(urlStr)
 }

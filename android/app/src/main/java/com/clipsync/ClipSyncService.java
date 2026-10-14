@@ -19,6 +19,8 @@ import android.os.Looper;
 import android.provider.MediaStore;
 import android.view.accessibility.AccessibilityEvent;
 import android.webkit.MimeTypeMap;
+import android.net.wifi.WifiManager;
+import android.os.PowerManager;
 import org.json.JSONObject;
 
 import java.io.*;
@@ -41,6 +43,8 @@ public class ClipSyncService extends AccessibilityService {
     private static volatile ClipSyncService instance = null;
     private ClipboardManager clipboard;
     private Handler mainHandler;
+    private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
 
     public static Set<String> getActivePeers() {
         return peers.keySet();
@@ -94,6 +98,24 @@ public class ClipSyncService extends AccessibilityService {
         clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         mainHandler = new Handler(Looper.getMainLooper());
 
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ClipSync:WakeLock");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire(24 * 60 * 60 * 1000L);
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "ClipSync:WifiLock");
+                wifiLock.setReferenceCounted(false);
+                wifiLock.acquire();
+            }
+        } catch (Exception ignored) {}
+
         new Thread(this::startTcpServer).start();
         new Thread(this::startFileServer).start();
         new Thread(this::startUdpDiscovery).start();
@@ -110,6 +132,14 @@ public class ClipSyncService extends AccessibilityService {
         if (instance == this) {
             instance = null;
         }
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+            if (wifiLock != null && wifiLock.isHeld()) {
+                wifiLock.release();
+            }
+        } catch (Exception ignored) {}
         super.onDestroy();
     }
 
@@ -210,12 +240,16 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void startTcpServer() {
-        try (ServerSocket server = new ServerSocket(TCP_PORT)) {
-            while (true) {
-                Socket socket = server.accept();
-                new Thread(() -> handlePeer(socket)).start();
+        while (true) {
+            try (ServerSocket server = new ServerSocket(TCP_PORT)) {
+                while (true) {
+                    Socket socket = server.accept();
+                    new Thread(() -> handlePeer(socket)).start();
+                }
+            } catch (Exception e) {
+                try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
             }
-        } catch (Exception ignored) {}
+        }
     }
 
     private void handlePeer(Socket socket) {
@@ -284,12 +318,16 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void startFileServer() {
-        try (ServerSocket server = new ServerSocket(FILE_PORT)) {
-            while (true) {
-                Socket socket = server.accept();
-                new Thread(() -> handleIncomingFile(socket)).start();
+        while (true) {
+            try (ServerSocket server = new ServerSocket(FILE_PORT)) {
+                while (true) {
+                    Socket socket = server.accept();
+                    new Thread(() -> handleIncomingFile(socket)).start();
+                }
+            } catch (Exception e) {
+                try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
             }
-        } catch (Exception ignored) {}
+        }
     }
 
     private void handleIncomingFile(Socket socket) {
@@ -467,31 +505,41 @@ public class ClipSyncService extends AccessibilityService {
 
     private void startUdpDiscovery() {
         new Thread(() -> {
-            try (DatagramSocket socket = new DatagramSocket()) {
-                socket.setBroadcast(true);
-                byte[] beacon = ("CLIP_SYNC:" + deviceId).getBytes(StandardCharsets.UTF_8);
-                InetAddress bcast = InetAddress.getByName("255.255.255.255");
-                while (true) {
-                    socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
-                    Thread.sleep(4000);
-                }
-            } catch (Exception ignored) {}
-        }).start();
-
-        try (DatagramSocket socket = new DatagramSocket(UDP_PORT)) {
-            byte[] buf = new byte[1024];
             while (true) {
-                DatagramPacket packet = new DatagramPacket(buf, buf.length);
-                socket.receive(packet);
-                String msg = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
-                if (msg.startsWith("CLIP_SYNC:") && !msg.endsWith(deviceId)) {
-                    String peerIp = packet.getAddress().getHostAddress();
-                    if (!peers.containsKey(peerIp)) {
-                        new Thread(() -> connectToPeer(peerIp)).start();
+                try (DatagramSocket socket = new DatagramSocket()) {
+                    socket.setBroadcast(true);
+                    byte[] beacon = ("CLIP_SYNC:" + deviceId).getBytes(StandardCharsets.UTF_8);
+                    InetAddress bcast = InetAddress.getByName("255.255.255.255");
+                    while (true) {
+                        socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
+                        Thread.sleep(4000);
                     }
+                } catch (Exception e) {
+                    try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
                 }
             }
-        } catch (Exception ignored) {}
+        }).start();
+
+        new Thread(() -> {
+            while (true) {
+                try (DatagramSocket socket = new DatagramSocket(UDP_PORT)) {
+                    byte[] buf = new byte[1024];
+                    while (true) {
+                        DatagramPacket packet = new DatagramPacket(buf, buf.length);
+                        socket.receive(packet);
+                        String msg = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
+                        if (msg.startsWith("CLIP_SYNC:") && !msg.endsWith(deviceId)) {
+                            String peerIp = packet.getAddress().getHostAddress();
+                            if (!peers.containsKey(peerIp)) {
+                                new Thread(() -> connectToPeer(peerIp)).start();
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
+                }
+            }
+        }).start();
     }
 
     private void connectToPeer(String ip) {
