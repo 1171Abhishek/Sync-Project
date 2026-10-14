@@ -15,7 +15,7 @@ if command -v rpmbuild &>/dev/null; then
 
     RPM_TOPDIR="$PROJECT_DIR/dist/rpmbuild"
     rm -rf "$RPM_TOPDIR"
-    mkdir -p "$RPM_TOPDIR"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+    mkdir -p "$RPM_TOPDIR"/{BUILD,RPMS,SOURCES,SPECS,SRPMS,tmp}
 
     # Copy files to SOURCES & SPECS
     cp clip-sync "$RPM_TOPDIR/SOURCES/"
@@ -24,6 +24,7 @@ if command -v rpmbuild &>/dev/null; then
 
     rpmbuild -bb \
         --define "_topdir $RPM_TOPDIR" \
+        --define "_tmppath $RPM_TOPDIR/tmp" \
         "$RPM_TOPDIR/SPECS/clip-sync.spec"
 
     # Move RPM to dist/
