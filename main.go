@@ -6,12 +6,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 func main() {
 	if len(os.Args) > 1 {
 		arg := os.Args[1]
-		if arg == "send" || fileExists(arg) {
+		if arg == "send" || fileExists(arg) || strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://") {
 			targetFile := arg
 			if arg == "send" {
 				if len(os.Args) < 3 {
@@ -20,14 +21,14 @@ func main() {
 				}
 				targetFile = os.Args[2]
 			}
-			sendFileToPhone(targetFile)
+			sendFileOrURLToPhone(targetFile)
 			return
 		}
 		if arg == "-h" || arg == "--help" {
 			fmt.Println("ClipSync - Seamless Linux <-> Android Continuity")
 			fmt.Println("Usage:")
 			fmt.Println("  clip-sync               Start background clipboard, notification & file daemon")
-			fmt.Println("  clip-sync send <file>   Send image or file to your Phone")
+			fmt.Println("  clip-sync send <file|url> Send image, file, or URL link to your Phone")
 			return
 		}
 	}

@@ -95,6 +95,9 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 		}
 
 		switch msg.Type {
+		case "url":
+			n.handleURL(msg)
+
 		case "notification":
 			n.handleNotification(msg)
 

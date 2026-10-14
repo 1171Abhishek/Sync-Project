@@ -20,10 +20,23 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import org.json.JSONObject;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class ShareActivity extends Activity {
     private static final int FILE_PORT = 9878;
     private static final int UDP_PORT = 9876;
+    private static final Pattern URL_PATTERN = Pattern.compile("https?://[^\\s<>\"{}|\\\\^`]+", Pattern.CASE_INSENSITIVE);
+
+    private static String extractUrl(String text) {
+        if (text == null) return null;
+        Matcher m = URL_PATTERN.matcher(text);
+        if (m.find()) {
+            return m.group();
+        }
+        return null;
+    }
     private Handler mainHandler;
     private String lastError = "";
 
@@ -59,8 +72,20 @@ public class ShareActivity extends Activity {
 
         String text = intent.getStringExtra(Intent.EXTRA_TEXT);
         if (text != null && !text.trim().isEmpty()) {
-            ClipSyncService.broadcastText(text);
-            Toast.makeText(this, "✓ Copied to PC clipboard!", Toast.LENGTH_SHORT).show();
+            String url = extractUrl(text);
+            if (url != null) {
+                try {
+                    JSONObject obj = new JSONObject();
+                    obj.put("type", "url");
+                    obj.put("url", url);
+                    obj.put("content", text);
+                    ClipSyncService.broadcastJson(obj);
+                    Toast.makeText(this, "🌐 Opening tab on PC...", Toast.LENGTH_SHORT).show();
+                } catch (Exception ignored) {}
+            } else {
+                ClipSyncService.broadcastText(text);
+                Toast.makeText(this, "✓ Copied to PC clipboard!", Toast.LENGTH_SHORT).show();
+            }
             finish();
             return;
         }

@@ -100,6 +100,14 @@ func (n *SyncNode) startFileServer() {
 	}
 }
 
+func sendFileOrURLToPhone(target string) {
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		sendURLToPhone(target)
+		return
+	}
+	sendFileToPhone(target)
+}
+
 func sendFileToPhone(filePath string) {
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {

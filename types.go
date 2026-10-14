@@ -20,6 +20,7 @@ type SyncMessage struct {
 	DeviceID  string `json:"device_id"`
 	Hash      string `json:"hash,omitempty"`
 	Content   string `json:"content,omitempty"`
+	URL       string `json:"url,omitempty"`
 	AppName   string `json:"app_name,omitempty"`
 	Title     string `json:"title,omitempty"`
 	OTP       string `json:"otp,omitempty"`

@@ -235,23 +235,45 @@ public class ClipSyncService extends AccessibilityService {
             String line;
             while ((line = reader.readLine()) != null) {
                 JSONObject obj = new JSONObject(line);
-                String hash = obj.getString("hash");
-                String content = obj.getString("content");
-                String clean = content.trim();
+                String type = obj.optString("type", "clipboard");
 
-                synchronized (this) {
-                    if (!clean.isEmpty() && !clean.equals(lastReceived.trim())) {
-                        lastHash = hash;
-                        lastReceived = content;
-
+                if ("url".equals(type)) {
+                    String url = obj.optString("url");
+                    if (url == null || url.isEmpty()) {
+                        url = obj.optString("content");
+                    }
+                    if (url != null && !url.trim().isEmpty()) {
+                        final String targetUrl = url.trim();
                         mainHandler.post(() -> {
                             try {
-                                if (clipboard != null) {
-                                    ClipData clip = ClipData.newPlainText("ClipSync", content);
-                                    clipboard.setPrimaryClip(clip);
-                                }
+                                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl));
+                                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                startActivity(browserIntent);
                             } catch (Exception ignored) {}
                         });
+                    }
+                    continue;
+                }
+
+                if ("clipboard".equals(type) || type.isEmpty()) {
+                    String hash = obj.optString("hash", "");
+                    String contentStr = obj.optString("content", "");
+                    String clean = contentStr.trim();
+
+                    synchronized (this) {
+                        if (!clean.isEmpty() && !clean.equals(lastReceived.trim())) {
+                            lastHash = hash;
+                            lastReceived = contentStr;
+
+                            mainHandler.post(() -> {
+                                try {
+                                    if (clipboard != null) {
+                                        ClipData clip = ClipData.newPlainText("ClipSync", contentStr);
+                                        clipboard.setPrimaryClip(clip);
+                                    }
+                                } catch (Exception ignored) {}
+                            });
+                        }
                     }
                 }
             }
