@@ -57,6 +57,35 @@ public class ClipSyncService extends AccessibilityService {
         }
     }
 
+    public static void broadcastJson(JSONObject json) {
+        ClipSyncService service = instance;
+        if (service != null) {
+            new Thread(() -> service.sendJsonToPeers(json)).start();
+        }
+    }
+
+    public void sendJsonToPeers(JSONObject json) {
+        try {
+            if (!json.has("device_id")) {
+                json.put("device_id", deviceId);
+            }
+            byte[] bytes = (json.toString() + "\n").getBytes(StandardCharsets.UTF_8);
+
+            for (String hostIp : peers.keySet()) {
+                Socket socket = peers.get(hostIp);
+                if (socket != null && !socket.isClosed()) {
+                    try {
+                        OutputStream out = socket.getOutputStream();
+                        out.write(bytes);
+                        out.flush();
+                    } catch (Exception e) {
+                        peers.remove(hostIp, socket);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -103,7 +132,38 @@ public class ClipSyncService extends AccessibilityService {
             }
         } catch (Exception ignored) {}
 
-        // 2. Also check system clipboard with standard debounce
+        // 2. Fallback notification listener (e.g. toasts or notifications if NotificationListener not yet granted)
+        if (event.getEventType() == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
+            try {
+                CharSequence pkg = event.getPackageName();
+                if (pkg != null && !"com.clipsync".equals(pkg.toString())) {
+                    List<CharSequence> texts = event.getText();
+                    if (texts != null && !texts.isEmpty()) {
+                        StringBuilder sb = new StringBuilder();
+                        for (CharSequence cs : texts) {
+                            if (sb.length() > 0) sb.append(" ");
+                            sb.append(cs);
+                        }
+                        String alertContent = sb.toString().trim();
+                        if (!alertContent.isEmpty()) {
+                            String otp = ClipSyncNotificationService.extractOtpStatic(alertContent);
+                            JSONObject obj = new JSONObject();
+                            obj.put("type", "notification");
+                            obj.put("app_name", pkg.toString());
+                            obj.put("title", "Alert");
+                            obj.put("content", alertContent);
+                            if (otp != null && !otp.isEmpty()) {
+                                obj.put("otp", otp);
+                            }
+                            obj.put("timestamp", System.currentTimeMillis());
+                            sendJsonToPeers(obj);
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // 3. Also check system clipboard with standard debounce
         mainHandler.postDelayed(this::checkClipboard, 200);
         mainHandler.postDelayed(this::checkClipboard, 500);
     }
@@ -141,23 +201,11 @@ public class ClipSyncService extends AccessibilityService {
     private void broadcast(String content, String hash) {
         try {
             JSONObject obj = new JSONObject();
+            obj.put("type", "clipboard");
             obj.put("device_id", deviceId);
             obj.put("hash", hash);
             obj.put("content", content);
-            byte[] bytes = (obj.toString() + "\n").getBytes(StandardCharsets.UTF_8);
-
-            for (String hostIp : peers.keySet()) {
-                Socket socket = peers.get(hostIp);
-                if (socket != null && !socket.isClosed()) {
-                    try {
-                        OutputStream out = socket.getOutputStream();
-                        out.write(bytes);
-                        out.flush();
-                    } catch (Exception e) {
-                        peers.remove(hostIp, socket);
-                    }
-                }
-            }
+            sendJsonToPeers(obj);
         } catch (Exception ignored) {}
     }
 

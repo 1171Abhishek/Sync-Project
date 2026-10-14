@@ -15,25 +15,37 @@ public class MainActivity extends Activity {
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(50, 50, 50, 50);
+        layout.setPadding(60, 60, 60, 60);
 
         TextView title = new TextView(this);
         title.setText("ClipSync");
-        title.setTextSize(24);
+        title.setTextSize(26);
         layout.addView(title);
 
         TextView desc = new TextView(this);
-        desc.setText("\nTo enable automatic background sync with your Linux PC, please turn ON ClipSync in Accessibility Settings.\n");
-        desc.setTextSize(16);
+        desc.setText("\nSeamless local continuity with your Linux PC.\nTo enable features, please grant the permissions below:\n");
+        desc.setTextSize(15);
         layout.addView(desc);
 
-        Button btn = new Button(this);
-        btn.setText("Open Accessibility Settings");
-        btn.setOnClickListener(v -> {
+        Button a11yBtn = new Button(this);
+        a11yBtn.setText("1. Turn ON Clipboard Sync\n(Accessibility Settings)");
+        a11yBtn.setOnClickListener(v -> {
             Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
             startActivity(intent);
         });
-        layout.addView(btn);
+        layout.addView(a11yBtn);
+
+        TextView spacer = new TextView(this);
+        spacer.setText("\n");
+        layout.addView(spacer);
+
+        Button notifBtn = new Button(this);
+        notifBtn.setText("2. Turn ON Notification & OTP Sync\n(Device & App Notifications)");
+        notifBtn.setOnClickListener(v -> {
+            Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
+            startActivity(intent);
+        });
+        layout.addView(notifBtn);
 
         setContentView(layout);
     }
