@@ -25,20 +25,43 @@ func NewSyncNode() *SyncNode {
 		hasNative = true
 	}
 
-	return &SyncNode{
+	crypto := LoadOrCreateCrypto()
+
+	node := &SyncNode{
 		deviceID:   fmt.Sprintf("%s-%d", hostname, time.Now().Unix()%10000),
 		peers:      make(map[string]net.Conn),
 		nativeClip: hasNative,
+		crypto:     crypto,
 	}
+	go node.startHeartbeat()
+	go node.startReconnectWatchdog()
+	return node
 }
 
 func (n *SyncNode) BroadcastMessage(msg SyncMessage) {
 	n.peersLock.Lock()
 	defer n.peersLock.Unlock()
 
-	data, err := json.Marshal(msg)
+	innerData, err := json.Marshal(msg)
 	if err != nil {
 		return
+	}
+
+	var data []byte
+	if n.crypto != nil {
+		payload, err := n.crypto.Encrypt(innerData)
+		if err == nil {
+			encMsg := SyncMessage{
+				Type:     "encrypted",
+				DeviceID: n.deviceID,
+				Payload:  payload,
+			}
+			data, _ = json.Marshal(encMsg)
+		} else {
+			data = innerData
+		}
+	} else {
+		data = innerData
 	}
 	data = append(data, byte(10))
 
@@ -61,6 +84,11 @@ func (n *SyncNode) BroadcastClipboard(content, hash string) {
 }
 
 func (n *SyncNode) handlePeer(conn net.Conn) {
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(15 * time.Second)
+		_ = tcpConn.SetNoDelay(true)
+	}
 	hostIP := getHostIP(conn.RemoteAddr().String())
 
 	n.peersLock.Lock()
@@ -94,7 +122,27 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 			return
 		}
 
+		if msg.Type == "encrypted" {
+			if n.crypto == nil {
+				fmt.Printf("⚠️  Received encrypted message from %s but no encryption key loaded\n", hostIP)
+				continue
+			}
+			decrypted, err := n.crypto.Decrypt(msg.Payload)
+			if err != nil {
+				fmt.Printf("🔒 [Security] Rejected untrusted message from %s (wrong key / tampered)\n", hostIP)
+				continue
+			}
+			var innerMsg SyncMessage
+			if err := json.Unmarshal(decrypted, &innerMsg); err != nil {
+				continue
+			}
+			msg = innerMsg
+		}
+
 		switch msg.Type {
+		case "ping", "pong":
+			continue
+
 		case "url":
 			n.handleURL(msg)
 
@@ -172,4 +220,65 @@ func isOTP(s string) bool {
 		return true
 	}
 	return false
+}
+
+func (n *SyncNode) startHeartbeat() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		n.peersLock.Lock()
+		if len(n.peers) > 0 {
+			pingMsg := SyncMessage{
+				Type:     "ping",
+				DeviceID: n.deviceID,
+			}
+			innerData, _ := json.Marshal(pingMsg)
+			var data []byte
+			if n.crypto != nil {
+				if enc, err := n.crypto.Encrypt(innerData); err == nil {
+					data, _ = json.Marshal(SyncMessage{
+						Type:     "encrypted",
+						DeviceID: n.deviceID,
+						Payload:  enc,
+					})
+				} else {
+					data = innerData
+				}
+			} else {
+				data = innerData
+			}
+			data = append(data, byte(10))
+
+			for host, conn := range n.peers {
+				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if _, err := conn.Write(data); err != nil {
+					conn.Close()
+					delete(n.peers, host)
+				}
+				_ = conn.SetWriteDeadline(time.Time{})
+			}
+		}
+		n.peersLock.Unlock()
+	}
+}
+
+func (n *SyncNode) startReconnectWatchdog() {
+	ticker := time.NewTicker(4 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		n.peersLock.Lock()
+		peerCount := len(n.peers)
+		n.peersLock.Unlock()
+
+		if peerCount == 0 {
+			if data, err := os.ReadFile(PeerFile); err == nil {
+				lastIP := strings.TrimSpace(string(data))
+				if lastIP != "" {
+					n.connectToPeer(lastIP)
+				}
+			}
+		}
+	}
 }

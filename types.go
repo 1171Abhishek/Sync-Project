@@ -16,7 +16,7 @@ const (
 )
 
 type SyncMessage struct {
-	Type      string `json:"type,omitempty"` // "clipboard", "notification" (default "clipboard")
+	Type      string `json:"type,omitempty"` // "clipboard", "notification", "url", "encrypted"
 	DeviceID  string `json:"device_id"`
 	Hash      string `json:"hash,omitempty"`
 	Content   string `json:"content,omitempty"`
@@ -25,6 +25,7 @@ type SyncMessage struct {
 	Title     string `json:"title,omitempty"`
 	OTP       string `json:"otp,omitempty"`
 	Timestamp int64  `json:"timestamp,omitempty"`
+	Payload   string `json:"payload,omitempty"` // Base64 ciphertext for AES-256-GCM
 }
 
 type SyncNode struct {
@@ -35,4 +36,5 @@ type SyncNode struct {
 	peers        map[string]net.Conn
 	peersLock    sync.Mutex
 	nativeClip   bool
+	crypto       *CryptoManager
 }

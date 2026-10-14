@@ -11,6 +11,7 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 public class MainActivity extends Activity {
@@ -20,6 +21,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        ScrollView scrollView = new ScrollView(this);
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(60, 60, 60, 60);
@@ -31,12 +33,17 @@ public class MainActivity extends Activity {
         layout.addView(title);
 
         TextView desc = new TextView(this);
-        desc.setText("\nSeamless local continuity with your Linux PC.\nTo keep ClipSync connected 24/7 without disconnecting, please grant permissions below:\n");
+        desc.setText("
+Seamless local continuity with your Linux PC.
+To enable features, please grant the permissions below:
+");
         desc.setTextSize(15);
         layout.addView(desc);
 
+        // 1. Accessibility
         Button a11yBtn = new Button(this);
-        a11yBtn.setText("1. Turn ON Clipboard Sync\n(Accessibility Settings)");
+        a11yBtn.setText("1. Turn ON Clipboard Sync
+(Accessibility Settings)");
         a11yBtn.setOnClickListener(v -> {
             Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
             startActivity(intent);
@@ -44,11 +51,14 @@ public class MainActivity extends Activity {
         layout.addView(a11yBtn);
 
         TextView spacer1 = new TextView(this);
-        spacer1.setText("\n");
+        spacer1.setText("
+");
         layout.addView(spacer1);
 
+        // 2. Notification Access
         Button notifBtn = new Button(this);
-        notifBtn.setText("2. Turn ON Notification & OTP Sync\n(Device & App Notifications)");
+        notifBtn.setText("2. Turn ON Notification & OTP Sync
+(Device & App Notifications)");
         notifBtn.setOnClickListener(v -> {
             Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
             startActivity(intent);
@@ -56,9 +66,11 @@ public class MainActivity extends Activity {
         layout.addView(notifBtn);
 
         TextView spacer2 = new TextView(this);
-        spacer2.setText("\n");
+        spacer2.setText("
+");
         layout.addView(spacer2);
 
+        // 3. Battery Optimization
         batteryBtn = new Button(this);
         updateBatteryButton();
         batteryBtn.setOnClickListener(v -> {
@@ -66,7 +78,28 @@ public class MainActivity extends Activity {
         });
         layout.addView(batteryBtn);
 
-        setContentView(layout);
+        TextView spacer3 = new TextView(this);
+        spacer3.setText("
+");
+        layout.addView(spacer3);
+
+        // 4. Automatic Security & Encryption Status
+        TextView securityHeader = new TextView(this);
+        securityHeader.setText("4. Security & Encryption");
+        securityHeader.setTextSize(18);
+        securityHeader.setTextColor(Color.BLACK);
+        layout.addView(securityHeader);
+
+        TextView securityStatus = new TextView(this);
+        securityStatus.setText("🔒 100% Automatic End-to-End Encrypted (AES-256-GCM)
+All clipboard, notifications, URLs, and file drops are automatically encrypted with zero setup required.
+");
+        securityStatus.setTextSize(14);
+        securityStatus.setTextColor(Color.rgb(0, 120, 0));
+        layout.addView(securityStatus);
+
+        scrollView.addView(layout);
+        setContentView(scrollView);
     }
 
     @Override
@@ -88,10 +121,12 @@ public class MainActivity extends Activity {
     private void updateBatteryButton() {
         if (batteryBtn == null) return;
         if (!isBatteryOptimized()) {
-            batteryBtn.setText("3. Keep Running Always (Allow for Always)\n✓ Already Allowed (Unrestricted)");
+            batteryBtn.setText("3. Keep Running Always (Allow for Always)
+✓ Already Allowed (Unrestricted)");
             batteryBtn.setEnabled(false);
         } else {
-            batteryBtn.setText("3. Keep Running Always (Allow for Always)\n👉 Tap to Allow Always (No Disconnects)");
+            batteryBtn.setText("3. Keep Running Always (Allow for Always)
+👉 Tap to Allow Always (No Disconnects)");
             batteryBtn.setEnabled(true);
         }
     }

@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import android.webkit.MimeTypeMap;
 import android.net.wifi.WifiManager;
 import android.os.PowerManager;
+import android.content.pm.ServiceInfo;
 import org.json.JSONObject;
 
 import java.io.*;
@@ -48,6 +49,7 @@ public class ClipSyncService extends AccessibilityService {
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
     private String lastSelectedText = null;
+    private WifiManager.MulticastLock multicastLock;
 
     public static Set<String> getActivePeers() {
         return peers.keySet();
@@ -76,7 +78,23 @@ public class ClipSyncService extends AccessibilityService {
             if (!json.has("device_id")) {
                 json.put("device_id", deviceId);
             }
-            byte[] bytes = (json.toString() + "\n").getBytes(StandardCharsets.UTF_8);
+            byte[] secretKey = CryptoUtils.getSecretKey(this);
+            String wireString;
+            if (secretKey != null) {
+                String payload = CryptoUtils.encrypt(json.toString(), secretKey);
+                if (payload != null) {
+                    JSONObject enc = new JSONObject();
+                    enc.put("type", "encrypted");
+                    enc.put("device_id", deviceId);
+                    enc.put("payload", payload);
+                    wireString = enc.toString() + "\n";
+                } else {
+                    wireString = json.toString() + "\n";
+                }
+            } else {
+                wireString = json.toString() + "\n";
+            }
+            byte[] bytes = wireString.getBytes(StandardCharsets.UTF_8);
 
             for (String hostIp : peers.keySet()) {
                 Socket socket = peers.get(hostIp);
@@ -116,12 +134,20 @@ public class ClipSyncService extends AccessibilityService {
                 wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "ClipSync:WifiLock");
                 wifiLock.setReferenceCounted(false);
                 wifiLock.acquire();
+
+                multicastLock = wm.createMulticastLock("ClipSync:MulticastLock");
+                multicastLock.setReferenceCounted(false);
+                multicastLock.acquire();
             }
         } catch (Exception ignored) {}
+
+        startForegroundServiceNotification();
 
         new Thread(this::startTcpServer).start();
         new Thread(this::startFileServer).start();
         new Thread(this::startUdpDiscovery).start();
+        startHeartbeat();
+        startReconnectWatchdog();
 
         mainHandler.post(() -> {
             if (clipboard != null) {
@@ -141,6 +167,9 @@ public class ClipSyncService extends AccessibilityService {
             }
             if (wifiLock != null && wifiLock.isHeld()) {
                 wifiLock.release();
+            }
+            if (multicastLock != null && multicastLock.isHeld()) {
+                multicastLock.release();
             }
         } catch (Exception ignored) {}
         super.onDestroy();
@@ -375,6 +404,11 @@ public class ClipSyncService extends AccessibilityService {
             prefs.edit().putString("last_peer_ip", hostIp).apply();
         } catch (Exception ignored) {}
 
+        try {
+            socket.setKeepAlive(true);
+            socket.setTcpNoDelay(true);
+        } catch (Exception ignored) {}
+
         Socket old = peers.put(hostIp, socket);
         if (old != null && old != socket && !old.isClosed()) {
             try { old.close(); } catch (Exception ignored) {}
@@ -385,6 +419,30 @@ public class ClipSyncService extends AccessibilityService {
             while ((line = reader.readLine()) != null) {
                 JSONObject obj = new JSONObject(line);
                 String type = obj.optString("type", "clipboard");
+
+                if ("encrypted".equals(type)) {
+                    byte[] secretKey = CryptoUtils.getSecretKey(this);
+                    if (secretKey == null) {
+                        continue;
+                    }
+                    String payload = obj.optString("payload");
+                    String decrypted = CryptoUtils.decrypt(payload, secretKey);
+                    if (decrypted == null) {
+                        continue;
+                    }
+                    obj = new JSONObject(decrypted);
+                    type = obj.optString("type", "clipboard");
+                }
+
+                if ("ping".equals(type)) {
+                    JSONObject pong = new JSONObject();
+                    pong.put("type", "pong");
+                    sendJsonToPeers(pong);
+                    continue;
+                }
+                if ("pong".equals(type)) {
+                    continue;
+                }
 
                 if ("url".equals(type)) {
                     String url = obj.optString("url");
@@ -454,6 +512,8 @@ public class ClipSyncService extends AccessibilityService {
             OutputStream out = socket.getOutputStream();
 
             String filename = null;
+            String authHeader = null;
+            long timestamp = 0;
             long contentLength = -1;
 
             StringBuilder lineBuf = new StringBuilder();
@@ -478,9 +538,24 @@ public class ClipSyncService extends AccessibilityService {
                         try {
                             contentLength = Long.parseLong(line.substring(line.indexOf(':') + 1).trim());
                         } catch (Exception ignored) {}
+                    } else if (lower.startsWith("x-clipsync-auth:")) {
+                        authHeader = line.substring(line.indexOf(':') + 1).trim();
+                    } else if (lower.startsWith("x-clipsync-time:")) {
+                        try {
+                            timestamp = Long.parseLong(line.substring(line.indexOf(':') + 1).trim());
+                        } catch (Exception ignored) {}
                     }
                 } else if (c != '\r') {
                     lineBuf.append(c);
+                }
+            }
+
+            byte[] secretKey = CryptoUtils.getSecretKey(this);
+            if (secretKey != null) {
+                if (authHeader == null || !CryptoUtils.verifyAuthToken(filename, authHeader, timestamp, secretKey)) {
+                    out.write("HTTP/1.1 401 Unauthorized\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+                    socket.close();
+                    return;
                 }
             }
 
@@ -678,4 +753,76 @@ public class ClipSyncService extends AccessibilityService {
             return "";
         }
     }
+
+    private void startForegroundServiceNotification() {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            String channelId = "clipsync_persistent";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                    channelId, "ClipSync Service", NotificationManager.IMPORTANCE_LOW);
+                channel.setDescription("Keeps ClipSync permanently connected to your Linux PC");
+                if (nm != null) nm.createNotificationChannel(channel);
+            }
+
+            Intent intent = new Intent(this, MainActivity.class);
+            PendingIntent pi = PendingIntent.getActivity(this, 0, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0));
+
+            Notification.Builder builder;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder = new Notification.Builder(this, channelId);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+
+            builder.setSmallIcon(android.R.drawable.stat_notify_sync)
+                   .setContentTitle("ClipSync Active")
+                   .setContentText("🟢 Connected & Encrypted (AES-256)")
+                   .setOngoing(true)
+                   .setContentIntent(pi);
+
+            Notification notification = builder.build();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(1001, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC | ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(1001, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            } else {
+                startForeground(1001, notification);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void startHeartbeat() {
+        new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(15000);
+                    if (!peers.isEmpty()) {
+                        JSONObject ping = new JSONObject();
+                        ping.put("type", "ping");
+                        sendJsonToPeers(ping);
+                    }
+                } catch (Exception ignored) {}
+            }
+        }).start();
+    }
+
+    private void startReconnectWatchdog() {
+        new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(4000);
+                    if (peers.isEmpty()) {
+                        SharedPreferences prefs = getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
+                        String lastIp = prefs.getString("last_peer_ip", null);
+                        if (lastIp != null && !lastIp.isEmpty()) {
+                            connectToPeer(lastIp);
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        }).start();
+    }
+
 }

@@ -236,6 +236,12 @@ public class ShareActivity extends Activity {
             conn.setRequestProperty("X-Filename", URLEncoder.encode(filename, StandardCharsets.UTF_8.name()));
             conn.setRequestProperty("Content-Type", "application/octet-stream");
 
+            long now = System.currentTimeMillis() / 1000L;
+            byte[] secretKey = CryptoUtils.getSecretKey(this);
+            String authToken = CryptoUtils.generateAuthToken(filename, now, secretKey);
+            conn.setRequestProperty("X-ClipSync-Auth", authToken);
+            conn.setRequestProperty("X-ClipSync-Time", String.valueOf(now));
+
             if (size > 0 && size < Integer.MAX_VALUE) {
                 conn.setFixedLengthStreamingMode((int) size);
             } else {
@@ -278,6 +284,12 @@ public class ShareActivity extends Activity {
             req.append("Host: ").append(hostIp).append(":").append(FILE_PORT).append("\r\n");
             req.append("X-Filename: ").append(encodedName).append("\r\n");
             req.append("Content-Type: application/octet-stream\r\n");
+
+            long nowRaw = System.currentTimeMillis() / 1000L;
+            byte[] secretKeyRaw = CryptoUtils.getSecretKey(this);
+            String authTokenRaw = CryptoUtils.generateAuthToken(filename, nowRaw, secretKeyRaw);
+            req.append("X-ClipSync-Auth: ").append(authTokenRaw).append("\r\n");
+            req.append("X-ClipSync-Time: ").append(nowRaw).append("\r\n");
             if (size > 0) {
                 req.append("Content-Length: ").append(size).append("\r\n");
             } else {

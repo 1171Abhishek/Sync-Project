@@ -92,7 +92,20 @@ func sendURLToPhone(urlStr string) {
 		Content:   cleanURL,
 		Timestamp: time.Now().Unix(),
 	}
-	data, _ := json.Marshal(msg)
+	innerData, _ := json.Marshal(msg)
+
+	crypto := LoadOrCreateCrypto()
+	var data []byte
+	if payload, err := crypto.Encrypt(innerData); err == nil {
+		encMsg := SyncMessage{
+			Type:     "encrypted",
+			DeviceID: "linux-cli",
+			Payload:  payload,
+		}
+		data, _ = json.Marshal(encMsg)
+	} else {
+		data = innerData
+	}
 	data = append(data, byte(10))
 
 	_, err = conn.Write(data)

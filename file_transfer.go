@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -56,6 +57,17 @@ func (n *SyncNode) startFileServer() {
 		if rawFilename == "" {
 			rawFilename = fmt.Sprintf("received_%d", time.Now().Unix())
 		}
+		authHeader := r.Header.Get("X-ClipSync-Auth")
+		timeHeader := r.Header.Get("X-ClipSync-Time")
+		ts, _ := strconv.ParseInt(timeHeader, 10, 64)
+
+		crypto := LoadOrCreateCrypto()
+		if !crypto.VerifyAuthToken(rawFilename, authHeader, ts) {
+			fmt.Printf("🔒 [Security] Rejected unauthenticated file upload (%s) from %s\n", rawFilename, r.RemoteAddr)
+			http.Error(w, "Unauthorized: Pairing required", http.StatusUnauthorized)
+			return
+		}
+
 		safeFilename := filepath.Base(filepath.Clean(rawFilename))
 		if safeFilename == "." || safeFilename == "/" {
 			safeFilename = fmt.Sprintf("file_%d", time.Now().Unix())
@@ -146,6 +158,12 @@ func sendFileToPhone(filePath string) {
 		os.Exit(1)
 	}
 
+	crypto := LoadOrCreateCrypto()
+	now := time.Now().Unix()
+	authToken := crypto.GenerateAuthToken(fileName, now)
+
+	req.Header.Set("X-ClipSync-Auth", authToken)
+	req.Header.Set("X-ClipSync-Time", fmt.Sprintf("%d", now))
 	req.Header.Set("X-Filename", url.QueryEscape(fileName))
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = fileInfo.Size()
