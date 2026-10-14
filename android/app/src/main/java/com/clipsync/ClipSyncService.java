@@ -413,35 +413,35 @@ public class ClipSyncService extends AccessibilityService {
         String t = text.trim();
 
         // 1. Spaced or punctuated 6 digits: e.g. "123 456", "123-456", "123 456", "123 456"
-        Pattern p33 = Pattern.compile("(?<!\d)(\d{3})[\s\u00A0\u2009\-.,/]+(\d{3})(?!\d)");
+        Pattern p33 = Pattern.compile("(?<!\\d)(\\d{3})[\\s\\u00A0\\u2009\\-.,/]+(\\d{3})(?!\\d)");
         Matcher m33 = p33.matcher(t);
         if (m33.find()) {
             return m33.group(1) + m33.group(2);
         }
 
         // 2. Spaced or punctuated 8 digits: e.g. "1234 5678", "1234-5678"
-        Pattern p44 = Pattern.compile("(?<!\d)(\d{4})[\s\u00A0\u2009\-.,/]+(\d{4})(?!\d)");
+        Pattern p44 = Pattern.compile("(?<!\\d)(\\d{4})[\\s\\u00A0\\u2009\\-.,/]+(\\d{4})(?!\\d)");
         Matcher m44 = p44.matcher(t);
         if (m44.find()) {
             return m44.group(1) + m44.group(2);
         }
 
         // 3. Spaced-out digits (accessibility: "1, 2, 3, 4, 5, 6" or "1 2 3 4 5 6")
-        Pattern pSpaced = Pattern.compile("(?<!\d)(\d)[\s\u00A0\u2009,]+(\d)[\s\u00A0\u2009,]+(\d)[\s\u00A0\u2009,]+(\d)[\s\u00A0\u2009,]+(\d)[\s\u00A0\u2009,]+(\d)(?!\d)");
+        Pattern pSpaced = Pattern.compile("(?<!\\d)(\\d)[\\s\\u00A0\\u2009,]+(\\d)[\\s\\u00A0\\u2009,]+(\\d)[\\s\\u00A0\\u2009,]+(\\d)[\\s\\u00A0\\u2009,]+(\\d)[\\s\\u00A0\\u2009,]+(\\d)(?!\\d)");
         Matcher mSpaced = pSpaced.matcher(t);
         if (mSpaced.find()) {
             return mSpaced.group(1) + mSpaced.group(2) + mSpaced.group(3) + mSpaced.group(4) + mSpaced.group(5) + mSpaced.group(6);
         }
 
         // 4. Standalone 6 to 8 continuous digits: e.g. "123456" or "12345678"
-        Pattern p68 = Pattern.compile("(?<!\d)(\d{6,8})(?!\d)");
+        Pattern p68 = Pattern.compile("(?<!\\d)(\\d{6,8})(?!\\d)");
         Matcher m68 = p68.matcher(t);
         if (m68.find()) {
             return m68.group(1);
         }
 
         // 5. Standalone 4 to 5 digits (excluding years 2020-2030)
-        Pattern p45 = Pattern.compile("(?<!\d)(\d{4,5})(?!\d)");
+        Pattern p45 = Pattern.compile("(?<!\\d)(\\d{4,5})(?!\\d)");
         Matcher m45 = p45.matcher(t);
         if (m45.find()) {
             try {
