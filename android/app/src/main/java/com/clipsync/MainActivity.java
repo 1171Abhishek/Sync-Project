@@ -33,17 +33,13 @@ public class MainActivity extends Activity {
         layout.addView(title);
 
         TextView desc = new TextView(this);
-        desc.setText("
-Seamless local continuity with your Linux PC.
-To enable features, please grant the permissions below:
-");
+        desc.setText("\nSeamless local continuity with your Linux PC.\nTo enable features, please grant the permissions below:\n");
         desc.setTextSize(15);
         layout.addView(desc);
 
         // 1. Accessibility
         Button a11yBtn = new Button(this);
-        a11yBtn.setText("1. Turn ON Clipboard Sync
-(Accessibility Settings)");
+        a11yBtn.setText("1. Turn ON Clipboard Sync\n(Accessibility Settings)");
         a11yBtn.setOnClickListener(v -> {
             Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
             startActivity(intent);
@@ -51,14 +47,12 @@ To enable features, please grant the permissions below:
         layout.addView(a11yBtn);
 
         TextView spacer1 = new TextView(this);
-        spacer1.setText("
-");
+        spacer1.setText("\n");
         layout.addView(spacer1);
 
         // 2. Notification Access
         Button notifBtn = new Button(this);
-        notifBtn.setText("2. Turn ON Notification & OTP Sync
-(Device & App Notifications)");
+        notifBtn.setText("2. Turn ON Notification & OTP Sync\n(Device & App Notifications)");
         notifBtn.setOnClickListener(v -> {
             Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
             startActivity(intent);
@@ -66,8 +60,7 @@ To enable features, please grant the permissions below:
         layout.addView(notifBtn);
 
         TextView spacer2 = new TextView(this);
-        spacer2.setText("
-");
+        spacer2.setText("\n");
         layout.addView(spacer2);
 
         // 3. Battery Optimization
@@ -79,8 +72,7 @@ To enable features, please grant the permissions below:
         layout.addView(batteryBtn);
 
         TextView spacer3 = new TextView(this);
-        spacer3.setText("
-");
+        spacer3.setText("\n");
         layout.addView(spacer3);
 
         // 4. Automatic Security & Encryption Status
@@ -91,9 +83,7 @@ To enable features, please grant the permissions below:
         layout.addView(securityHeader);
 
         TextView securityStatus = new TextView(this);
-        securityStatus.setText("🔒 100% Automatic End-to-End Encrypted (AES-256-GCM)
-All clipboard, notifications, URLs, and file drops are automatically encrypted with zero setup required.
-");
+        securityStatus.setText("🔒 100% Automatic End-to-End Encrypted (AES-256-GCM)\nAll clipboard, notifications, URLs, and file drops are automatically encrypted with zero setup required.\n");
         securityStatus.setTextSize(14);
         securityStatus.setTextColor(Color.rgb(0, 120, 0));
         layout.addView(securityStatus);
@@ -121,12 +111,10 @@ All clipboard, notifications, URLs, and file drops are automatically encrypted w
     private void updateBatteryButton() {
         if (batteryBtn == null) return;
         if (!isBatteryOptimized()) {
-            batteryBtn.setText("3. Keep Running Always (Allow for Always)
-✓ Already Allowed (Unrestricted)");
+            batteryBtn.setText("3. Keep Running Always (Allow for Always)\n✓ Already Allowed (Unrestricted)");
             batteryBtn.setEnabled(false);
         } else {
-            batteryBtn.setText("3. Keep Running Always (Allow for Always)
-👉 Tap to Allow Always (No Disconnects)");
+            batteryBtn.setText("3. Keep Running Always (Allow for Always)\n👉 Tap to Allow Always (No Disconnects)");
             batteryBtn.setEnabled(true);
         }
     }
