@@ -112,6 +112,16 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 				fmt.Printf("📥 [%s] Received clipboard from %s (%d bytes): %.30s...\n",
 					time.Now().Format("15:04:05"), msg.DeviceID, len(msg.Content), strings.ReplaceAll(msg.Content, "\n", " "))
 				_ = n.writeClipboard(msg.Content)
+
+				if isOTP(cleanMsg) {
+					sendDesktopNotification("🔑 OTP Copied to Clipboard", cleanMsg, "dialog-password", "normal")
+				} else {
+					preview := cleanMsg
+					if len(preview) > 50 {
+						preview = preview[:50] + "..."
+					}
+					sendDesktopNotification("📋 Clipboard Synced from Phone", preview, "edit-copy", "low")
+				}
 			} else {
 				n.mu.Unlock()
 			}
@@ -149,4 +159,17 @@ func (n *SyncNode) connectToPeer(ip string) {
 		return
 	}
 	go n.handlePeer(conn)
+}
+
+func isOTP(s string) bool {
+	clean := strings.TrimSpace(s)
+	if len(clean) >= 4 && len(clean) <= 8 {
+		for _, r := range clean {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }

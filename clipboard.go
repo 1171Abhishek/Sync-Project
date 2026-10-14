@@ -22,23 +22,30 @@ func hashContent(s string) string {
 }
 
 func (n *SyncNode) writeClipboard(text string) error {
-	if n.nativeClip {
-		_, err := clipboard.Write(context.Background(), clipboard.FmtText, []byte(text))
-		if err == nil {
-			return nil
-		}
-	}
 	if cmdExists("wl-copy") {
 		cmd := exec.Command("wl-copy")
 		cmd.Stdin = strings.NewReader(text)
-		return cmd.Run()
+		_ = cmd.Run()
+
+		cmdP := exec.Command("wl-copy", "-p")
+		cmdP.Stdin = strings.NewReader(text)
+		_ = cmdP.Run()
 	}
+
+	if n.nativeClip {
+		_, _ = clipboard.Write(context.Background(), clipboard.FmtText, []byte(text))
+	}
+
 	if cmdExists("xclip") {
 		cmd := exec.Command("xclip", "-selection", "clipboard")
 		cmd.Stdin = strings.NewReader(text)
-		return cmd.Run()
+		_ = cmd.Run()
+
+		cmdP := exec.Command("xclip", "-selection", "primary")
+		cmdP.Stdin = strings.NewReader(text)
+		_ = cmdP.Run()
 	}
-	return fmt.Errorf("no clipboard utility found")
+	return nil
 }
 
 func (n *SyncNode) startClipboardWatcher() {

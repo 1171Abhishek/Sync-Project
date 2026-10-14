@@ -18,6 +18,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import java.util.ArrayList;
 import android.webkit.MimeTypeMap;
 import android.net.wifi.WifiManager;
 import android.os.PowerManager;
@@ -45,6 +47,7 @@ public class ClipSyncService extends AccessibilityService {
     private Handler mainHandler;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+    private String lastSelectedText = null;
 
     public static Set<String> getActivePeers() {
         return peers.keySet();
@@ -145,25 +148,72 @@ public class ClipSyncService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // 1. Direct text extraction from Accessibility event (bypasses Android 10 clipboard lock)
-        try {
-            int eventType = event.getEventType();
-            if (eventType == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
+        if (event == null) return;
+        int eventType = event.getEventType();
+
+        // 1. Selection changed: CACHE ONLY, do NOT broadcast automatically!
+        if (eventType == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
+            try {
                 List<CharSequence> texts = event.getText();
                 int from = event.getFromIndex();
                 int to = event.getToIndex();
                 if (texts != null && !texts.isEmpty() && from >= 0 && to > from) {
                     String full = texts.get(0).toString();
                     if (to <= full.length()) {
-                        String selected = full.substring(from, to);
-                        processAndBroadcast(selected);
+                        lastSelectedText = full.substring(from, to);
                     }
                 }
-            }
-        } catch (Exception ignored) {}
+            } catch (Exception ignored) {}
+            return;
+        }
 
-        // 2. Fallback notification listener (e.g. toasts or notifications if NotificationListener not yet granted)
-        if (event.getEventType() == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
+        // 2. View Clicked: detects "Copy" buttons OR Authenticator app OTP taps
+        if (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            AccessibilityNodeInfo source = event.getSource();
+            if (source != null) {
+                try {
+                    String text = source.getText() != null ? source.getText().toString().trim() : "";
+                    String desc = source.getContentDescription() != null ? source.getContentDescription().toString().trim() : "";
+                    String viewId = source.getViewIdResourceName() != null ? source.getViewIdResourceName().toLowerCase() : "";
+
+                    boolean isCopyButton = text.equalsIgnoreCase("copy") ||
+                                           desc.toLowerCase().contains("copy") ||
+                                           viewId.contains("copy");
+
+                    if (isCopyButton) {
+                        // User actually tapped "Copy" button in selection toolbar or app
+                        if (lastSelectedText != null && !lastSelectedText.trim().isEmpty()) {
+                            processAndBroadcast(lastSelectedText);
+                            lastSelectedText = null;
+                        } else {
+                            String siblingText = extractTextFromSiblings(source);
+                            if (siblingText != null && !siblingText.isEmpty()) {
+                                processAndBroadcast(siblingText);
+                            }
+                        }
+                    } else {
+                        // Check if an Authenticator app item was clicked (e.g. Google Authenticator OTP)
+                        String otp = extractOtpFromNode(source);
+                        if (otp == null && source.getParent() != null) {
+                            AccessibilityNodeInfo parent = source.getParent();
+                            otp = extractOtpFromNode(parent);
+                            parent.recycle();
+                        }
+                        if (otp != null && !otp.isEmpty()) {
+                            processAndBroadcast(otp);
+                        }
+                    }
+                } catch (Exception ignored) {
+                } finally {
+                    source.recycle();
+                }
+            }
+            mainHandler.postDelayed(this::checkClipboard, 150);
+            mainHandler.postDelayed(this::checkClipboard, 400);
+        }
+
+        // 3. Notification / Toast state changed (e.g. "Code copied" or push notification)
+        if (eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
             try {
                 CharSequence pkg = event.getPackageName();
                 if (pkg != null && !"com.clipsync".equals(pkg.toString())) {
@@ -177,6 +227,20 @@ public class ClipSyncService extends AccessibilityService {
                         String alertContent = sb.toString().trim();
                         if (!alertContent.isEmpty()) {
                             String otp = ClipSyncNotificationService.extractOtpStatic(alertContent);
+                            if (otp != null && !otp.isEmpty()) {
+                                processAndBroadcast(otp);
+                            }
+
+                            String lower = alertContent.toLowerCase();
+                            if (lower.contains("copied") || lower.contains("clipboard")) {
+                                if (lastSelectedText != null && !lastSelectedText.trim().isEmpty()) {
+                                    processAndBroadcast(lastSelectedText);
+                                    lastSelectedText = null;
+                                }
+                                mainHandler.post(this::checkClipboard);
+                                mainHandler.postDelayed(this::checkClipboard, 200);
+                            }
+
                             JSONObject obj = new JSONObject();
                             obj.put("type", "notification");
                             obj.put("app_name", pkg.toString());
@@ -192,10 +256,61 @@ public class ClipSyncService extends AccessibilityService {
                 }
             } catch (Exception ignored) {}
         }
+    }
 
-        // 3. Also check system clipboard with standard debounce
-        mainHandler.postDelayed(this::checkClipboard, 200);
-        mainHandler.postDelayed(this::checkClipboard, 500);
+    private String extractOtpFromNode(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        List<String> allTexts = new ArrayList<>();
+        collectAllNodeTexts(node, allTexts, 0);
+
+        for (String text : allTexts) {
+            String cleanDigits = text.replaceAll("\\s+", "");
+            if (cleanDigits.matches("^[0-9]{6,8}$")) {
+                return cleanDigits;
+            }
+            if (cleanDigits.matches("^[0-9]{4,5}$")) {
+                try {
+                    int num = Integer.parseInt(cleanDigits);
+                    if (num < 2024 || num > 2028) {
+                        return cleanDigits;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
+    private void collectAllNodeTexts(AccessibilityNodeInfo node, List<String> texts, int depth) {
+        if (node == null || depth > 6) return;
+        CharSequence cs = node.getText();
+        if (cs != null && cs.length() > 0) {
+            texts.add(cs.toString().trim());
+        }
+        CharSequence desc = node.getContentDescription();
+        if (desc != null && desc.length() > 0) {
+            texts.add(desc.toString().trim());
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                collectAllNodeTexts(child, texts, depth + 1);
+                child.recycle();
+            }
+        }
+    }
+
+    private String extractTextFromSiblings(AccessibilityNodeInfo node) {
+        if (node == null || node.getParent() == null) return null;
+        AccessibilityNodeInfo parent = node.getParent();
+        List<String> texts = new ArrayList<>();
+        collectAllNodeTexts(parent, texts, 0);
+        parent.recycle();
+        for (String t : texts) {
+            if (!t.equalsIgnoreCase("copy") && !t.isEmpty()) {
+                return t;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -206,7 +321,7 @@ public class ClipSyncService extends AccessibilityService {
             if (clipboard == null || !clipboard.hasPrimaryClip()) return;
             ClipData clip = clipboard.getPrimaryClip();
             if (clip != null && clip.getItemCount() > 0) {
-                CharSequence text = clip.getItemAt(0).getText();
+                CharSequence text = clip.getItemAt(0).coerceToText(this);
                 if (text != null && text.length() > 0) {
                     processAndBroadcast(text.toString());
                 }
@@ -281,7 +396,9 @@ public class ClipSyncService extends AccessibilityService {
                         mainHandler.post(() -> {
                             try {
                                 Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl));
-                                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
+                                browserIntent.putExtra(android.provider.Browser.EXTRA_APPLICATION_ID, getPackageName());
+                                browserIntent.putExtra("create_new_tab", true);
                                 startActivity(browserIntent);
                             } catch (Exception ignored) {}
                         });
