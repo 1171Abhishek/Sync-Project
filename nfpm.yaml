@@ -1,0 +1,31 @@
+name: "clip-sync"
+arch: "x86_64"
+platform: "linux"
+version: "1.0.0"
+release: "1"
+section: "net"
+priority: "optional"
+maintainer: "Abhishek Kumar"
+description: "Seamless Linux and Android continuity daemon"
+vendor: "ClipSync"
+homepage: "https://github.com/1171Abhishek/Sync-Project"
+license: "GPL-3.0"
+
+depends:
+  - wl-clipboard
+  - libnotify
+  - xdg-utils
+
+recommends:
+  - xclip
+
+contents:
+  - src: ./clip-sync
+    dst: /usr/bin/clip-sync
+    file_info:
+      mode: 0755
+
+  - src: ./clip-sync.service
+    dst: /usr/lib/systemd/user/clip-sync.service
+    file_info:
+      mode: 0644
