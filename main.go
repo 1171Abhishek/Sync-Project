@@ -495,7 +495,7 @@ func sendFileToPhone(filePath string) {
 		sendNotification("ClipSync Send Failed", "No phone found on local Wi-Fi")
 		os.Exit(1)
 	}
-
+ 
 	file, err := os.Open(filePath)
 	if err != nil {
 		fmt.Printf("❌ Failed to open file: %v\n", err)
