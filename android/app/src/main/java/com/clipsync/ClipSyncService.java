@@ -25,6 +25,8 @@ import android.net.wifi.WifiManager;
 import android.os.PowerManager;
 import android.content.pm.ServiceInfo;
 import org.json.JSONObject;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import java.io.*;
 import java.net.*;
@@ -41,6 +43,10 @@ public class ClipSyncService extends AccessibilityService {
     private String deviceId;
     private String lastHash = "";
     private String lastReceived = "";
+    private volatile String lastReceivedFromPeer = "";
+    private volatile long lastReceivedFromPeerTime = 0;
+    private volatile String lastBroadcastedContent = "";
+    private volatile long lastBroadcastedTime = 0;
     private static final ConcurrentHashMap<String, Socket> peers = new ConcurrentHashMap<>();
     private static volatile String lastPeerIp = null;
     private static volatile ClipSyncService instance = null;
@@ -179,8 +185,10 @@ public class ClipSyncService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null) return;
         int eventType = event.getEventType();
+        CharSequence pkgCs = event.getPackageName();
+        String pkg = pkgCs != null ? pkgCs.toString().toLowerCase() : "";
 
-        // 1. Selection changed: CACHE ONLY, do NOT broadcast automatically!
+        // 1. Text Selection Changed: cache only (do not broadcast prematurely)
         if (eventType == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
             try {
                 List<CharSequence> texts = event.getText();
@@ -196,9 +204,38 @@ public class ClipSyncService extends AccessibilityService {
             return;
         }
 
-        // 2. View Clicked: detects "Copy" buttons OR Authenticator app OTP taps
-        if (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+        // 2. Android 13+ System UI Clipboard Preview Overlay
+        if ("com.android.systemui".equals(pkg) &&
+            (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
+             eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+             eventType == AccessibilityEvent.TYPE_VIEW_CLICKED)) {
+            try {
+                AccessibilityNodeInfo source = event.getSource();
+                if (source != null) {
+                    extractAndBroadcastFromSystemUi(source);
+                    source.recycle();
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // 3. View Clicked or Long Clicked: Tapping / long-pressing items (Copy button, Authenticator codes)
+        if (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+            eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) {
+
+            boolean isAuthApp = pkg.contains("authenticator") ||
+                                pkg.contains("twofas") ||
+                                pkg.contains("aegis") ||
+                                pkg.contains("authy") ||
+                                pkg.contains("otp") ||
+                                pkg.contains("bitwarden") ||
+                                pkg.contains("1password") ||
+                                pkg.contains("keeper") ||
+                                pkg.contains("dashlane") ||
+                                pkg.contains("pass");
+
             AccessibilityNodeInfo source = event.getSource();
+            boolean handled = false;
+
             if (source != null) {
                 try {
                     String text = source.getText() != null ? source.getText().toString().trim() : "";
@@ -206,30 +243,54 @@ public class ClipSyncService extends AccessibilityService {
                     String viewId = source.getViewIdResourceName() != null ? source.getViewIdResourceName().toLowerCase() : "";
 
                     boolean isCopyButton = text.equalsIgnoreCase("copy") ||
+                                           text.toLowerCase().contains("copy") ||
                                            desc.toLowerCase().contains("copy") ||
                                            viewId.contains("copy");
 
                     if (isCopyButton) {
-                        // User actually tapped "Copy" button in selection toolbar or app
+                        // User clicked a "Copy" button
                         if (lastSelectedText != null && !lastSelectedText.trim().isEmpty()) {
                             processAndBroadcast(lastSelectedText);
                             lastSelectedText = null;
+                            handled = true;
                         } else {
-                            String siblingText = extractTextFromSiblings(source);
-                            if (siblingText != null && !siblingText.isEmpty()) {
-                                processAndBroadcast(siblingText);
+                            // Look for sibling/parent text or OTP
+                            AccessibilityNodeInfo parent = source.getParent();
+                            if (parent != null) {
+                                String otp = extractOtpFromNode(parent);
+                                if (otp != null && !otp.isEmpty()) {
+                                    processAndBroadcast(otp);
+                                    handled = true;
+                                } else {
+                                    String siblingText = extractTextFromSiblings(source);
+                                    if (siblingText != null && !siblingText.isEmpty()) {
+                                        processAndBroadcast(siblingText);
+                                        handled = true;
+                                    }
+                                }
+                                parent.recycle();
                             }
                         }
-                    } else {
-                        // Check if an Authenticator app item was clicked (e.g. Google Authenticator OTP)
-                        String otp = extractOtpFromNode(source);
-                        if (otp == null && source.getParent() != null) {
-                            AccessibilityNodeInfo parent = source.getParent();
-                            otp = extractOtpFromNode(parent);
-                            parent.recycle();
+                    }
+
+                    if (!handled) {
+                        // Traverse up to 5 levels to find an OTP in the tapped card/row
+                        AccessibilityNodeInfo curr = source;
+                        for (int depth = 0; depth < 5 && curr != null; depth++) {
+                            String otp = extractOtpFromNode(curr);
+                            if (otp != null && !otp.isEmpty()) {
+                                processAndBroadcast(otp);
+                                handled = true;
+                                break;
+                            }
+                            AccessibilityNodeInfo p = curr.getParent();
+                            if (curr != source) {
+                                curr.recycle();
+                            }
+                            curr = p;
                         }
-                        if (otp != null && !otp.isEmpty()) {
-                            processAndBroadcast(otp);
+                        if (curr != null && curr != source) {
+                            curr.recycle();
                         }
                     }
                 } catch (Exception ignored) {
@@ -237,15 +298,30 @@ public class ClipSyncService extends AccessibilityService {
                     source.recycle();
                 }
             }
+
+            // Fallback for Authenticator apps if tapping didn't give node or OTP
+            if (!handled && isAuthApp) {
+                try {
+                    AccessibilityNodeInfo root = getRootInActiveWindow();
+                    if (root != null) {
+                        String otp = extractOtpFromNode(root);
+                        if (otp != null && !otp.isEmpty()) {
+                            processAndBroadcast(otp);
+                            handled = true;
+                        }
+                        root.recycle();
+                    }
+                } catch (Exception ignored) {}
+            }
+
             mainHandler.postDelayed(this::checkClipboard, 150);
             mainHandler.postDelayed(this::checkClipboard, 400);
         }
 
-        // 3. Notification / Toast state changed (e.g. "Code copied" or push notification)
+        // 4. Notification / Toast state changed (e.g. "Verification code copied to clipboard")
         if (eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
             try {
-                CharSequence pkg = event.getPackageName();
-                if (pkg != null && !"com.clipsync".equals(pkg.toString())) {
+                if (pkg != null && !"com.clipsync".equals(pkg)) {
                     List<CharSequence> texts = event.getText();
                     if (texts != null && !texts.isEmpty()) {
                         StringBuilder sb = new StringBuilder();
@@ -255,16 +331,35 @@ public class ClipSyncService extends AccessibilityService {
                         }
                         String alertContent = sb.toString().trim();
                         if (!alertContent.isEmpty()) {
-                            String otp = ClipSyncNotificationService.extractOtpStatic(alertContent);
+                            // First, check if the toast/alert itself has an OTP
+                            String otp = extractOtp(alertContent);
                             if (otp != null && !otp.isEmpty()) {
                                 processAndBroadcast(otp);
                             }
 
                             String lower = alertContent.toLowerCase();
-                            if (lower.contains("copied") || lower.contains("clipboard")) {
+                            boolean isCopiedToast = lower.contains("copied") ||
+                                                   lower.contains("clipboard") ||
+                                                   lower.contains("verification") ||
+                                                   lower.contains("token") ||
+                                                   lower.contains("code");
+
+                            if (isCopiedToast) {
                                 if (lastSelectedText != null && !lastSelectedText.trim().isEmpty()) {
                                     processAndBroadcast(lastSelectedText);
                                     lastSelectedText = null;
+                                } else {
+                                    // App toasted "Copied to clipboard" - inspect active window to grab the code!
+                                    try {
+                                        AccessibilityNodeInfo root = getRootInActiveWindow();
+                                        if (root != null) {
+                                            String windowOtp = extractOtpFromNode(root);
+                                            if (windowOtp != null && !windowOtp.isEmpty()) {
+                                                processAndBroadcast(windowOtp);
+                                            }
+                                            root.recycle();
+                                        }
+                                    } catch (Exception ignored) {}
                                 }
                                 mainHandler.post(this::checkClipboard);
                                 mainHandler.postDelayed(this::checkClipboard, 200);
@@ -272,7 +367,7 @@ public class ClipSyncService extends AccessibilityService {
 
                             JSONObject obj = new JSONObject();
                             obj.put("type", "notification");
-                            obj.put("app_name", pkg.toString());
+                            obj.put("app_name", pkg);
                             obj.put("title", "Alert");
                             obj.put("content", alertContent);
                             if (otp != null && !otp.isEmpty()) {
@@ -287,30 +382,95 @@ public class ClipSyncService extends AccessibilityService {
         }
     }
 
+    private void extractAndBroadcastFromSystemUi(AccessibilityNodeInfo node) {
+        if (node == null) return;
+        try {
+            String viewId = node.getViewIdResourceName();
+            if (viewId != null && (viewId.toLowerCase().contains("preview") || viewId.toLowerCase().contains("clipboard"))) {
+                CharSequence cs = node.getText();
+                if (cs != null && cs.length() > 0) {
+                    processAndBroadcast(cs.toString());
+                    return;
+                }
+                CharSequence desc = node.getContentDescription();
+                if (desc != null && desc.length() > 0 && !desc.toString().equalsIgnoreCase("copy")) {
+                    processAndBroadcast(desc.toString());
+                    return;
+                }
+            }
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) {
+                    extractAndBroadcastFromSystemUi(child);
+                    child.recycle();
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    public static String extractOtp(String text) {
+        if (text == null || text.trim().isEmpty()) return null;
+        String t = text.trim();
+
+        // 1. Spaced or punctuated 6 digits: e.g. "123 456", "123-456", "123 456", "123 456"
+        Pattern p33 = Pattern.compile("(?<!\d)(\d{3})[\s\u00A0\u2009\-.,/]+(\d{3})(?!\d)");
+        Matcher m33 = p33.matcher(t);
+        if (m33.find()) {
+            return m33.group(1) + m33.group(2);
+        }
+
+        // 2. Spaced or punctuated 8 digits: e.g. "1234 5678", "1234-5678"
+        Pattern p44 = Pattern.compile("(?<!\d)(\d{4})[\s\u00A0\u2009\-.,/]+(\d{4})(?!\d)");
+        Matcher m44 = p44.matcher(t);
+        if (m44.find()) {
+            return m44.group(1) + m44.group(2);
+        }
+
+        // 3. Spaced-out digits (accessibility: "1, 2, 3, 4, 5, 6" or "1 2 3 4 5 6")
+        Pattern pSpaced = Pattern.compile("(?<!\d)(\d)[\s\u00A0\u2009,]+(\d)[\s\u00A0\u2009,]+(\d)[\s\u00A0\u2009,]+(\d)[\s\u00A0\u2009,]+(\d)[\s\u00A0\u2009,]+(\d)(?!\d)");
+        Matcher mSpaced = pSpaced.matcher(t);
+        if (mSpaced.find()) {
+            return mSpaced.group(1) + mSpaced.group(2) + mSpaced.group(3) + mSpaced.group(4) + mSpaced.group(5) + mSpaced.group(6);
+        }
+
+        // 4. Standalone 6 to 8 continuous digits: e.g. "123456" or "12345678"
+        Pattern p68 = Pattern.compile("(?<!\d)(\d{6,8})(?!\d)");
+        Matcher m68 = p68.matcher(t);
+        if (m68.find()) {
+            return m68.group(1);
+        }
+
+        // 5. Standalone 4 to 5 digits (excluding years 2020-2030)
+        Pattern p45 = Pattern.compile("(?<!\d)(\d{4,5})(?!\d)");
+        Matcher m45 = p45.matcher(t);
+        if (m45.find()) {
+            try {
+                int val = Integer.parseInt(m45.group(1));
+                if (val < 2020 || val > 2030) {
+                    return m45.group(1);
+                }
+            } catch (Exception ignored) {}
+        }
+
+        return null;
+    }
+
     private String extractOtpFromNode(AccessibilityNodeInfo node) {
         if (node == null) return null;
         List<String> allTexts = new ArrayList<>();
         collectAllNodeTexts(node, allTexts, 0);
 
         for (String text : allTexts) {
-            String cleanDigits = text.replaceAll("\\s+", "");
-            if (cleanDigits.matches("^[0-9]{6,8}$")) {
-                return cleanDigits;
-            }
-            if (cleanDigits.matches("^[0-9]{4,5}$")) {
-                try {
-                    int num = Integer.parseInt(cleanDigits);
-                    if (num < 2024 || num > 2028) {
-                        return cleanDigits;
-                    }
-                } catch (Exception ignored) {}
+            String otp = extractOtp(text);
+            if (otp != null && !otp.isEmpty()) {
+                return otp;
             }
         }
         return null;
     }
 
     private void collectAllNodeTexts(AccessibilityNodeInfo node, List<String> texts, int depth) {
-        if (node == null || depth > 6) return;
+        if (node == null || depth > 8) return;
         CharSequence cs = node.getText();
         if (cs != null && cs.length() > 0) {
             texts.add(cs.toString().trim());
@@ -359,17 +519,26 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void processAndBroadcast(String str) {
+        if (str == null) return;
         String clean = str.trim();
         if (clean.isEmpty()) return;
+
+        long now = System.currentTimeMillis();
+        // Prevent echo loop of what we just received from Linux within the last 3 seconds
+        if (clean.equals(lastReceivedFromPeer) && (now - lastReceivedFromPeerTime < 3000)) {
+            return;
+        }
+
+        // Prevent rapid duplicate broadcasting of the same text within 1 second
+        if (clean.equals(lastBroadcastedContent) && (now - lastBroadcastedTime < 1000)) {
+            return;
+        }
+
+        lastBroadcastedContent = clean;
+        lastBroadcastedTime = now;
         String hash = hash(clean);
 
-        synchronized (this) {
-            if (!clean.equals(lastReceived.trim()) && !hash.equals(lastHash)) {
-                lastHash = hash;
-                lastReceived = str;
-                new Thread(() -> broadcast(str, hash)).start();
-            }
-        }
+        new Thread(() -> broadcast(str, hash)).start();
     }
 
     private void broadcast(String content, String hash) {
@@ -469,20 +638,20 @@ public class ClipSyncService extends AccessibilityService {
                     String contentStr = obj.optString("content", "");
                     String clean = contentStr.trim();
 
-                    synchronized (this) {
-                        if (!clean.isEmpty() && !clean.equals(lastReceived.trim())) {
-                            lastHash = hash;
-                            lastReceived = contentStr;
+                    if (!clean.isEmpty()) {
+                        lastReceivedFromPeer = clean;
+                        lastReceivedFromPeerTime = System.currentTimeMillis();
+                        lastHash = hash;
+                        lastReceived = contentStr;
 
-                            mainHandler.post(() -> {
-                                try {
-                                    if (clipboard != null) {
-                                        ClipData clip = ClipData.newPlainText("ClipSync", contentStr);
-                                        clipboard.setPrimaryClip(clip);
-                                    }
-                                } catch (Exception ignored) {}
-                            });
-                        }
+                        mainHandler.post(() -> {
+                            try {
+                                if (clipboard != null) {
+                                    ClipData clip = ClipData.newPlainText("ClipSync", contentStr);
+                                    clipboard.setPrimaryClip(clip);
+                                }
+                            } catch (Exception ignored) {}
+                        });
                     }
                 }
             }
