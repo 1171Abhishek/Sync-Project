@@ -119,9 +119,13 @@ func (n *SyncNode) handleNotification(msg SyncMessage) {
 	fmt.Printf("🔔 [%s] Notification from %s (%s): %.40s\n",
 		time.Now().Format("15:04:05"), appName, title, content)
 
+	displayBody := content
+	if displayBody == "" {
+		displayBody = title
+	}
 	sendDesktopNotification(
 		fmt.Sprintf("📱 %s: %s", appName, title),
-		content,
+		displayBody,
 		"dialog-information",
 		"normal",
 	)

@@ -15,6 +15,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 public class MainActivity extends Activity {
+    private Button a11yBtn;
+    private Button notifBtn;
     private Button batteryBtn;
 
     @Override
@@ -38,8 +40,8 @@ public class MainActivity extends Activity {
         layout.addView(desc);
 
         // 1. Accessibility
-        Button a11yBtn = new Button(this);
-        a11yBtn.setText("1. Turn ON Clipboard Sync\n(Accessibility Settings)");
+        a11yBtn = new Button(this);
+        updateAccessibilityButton();
         a11yBtn.setOnClickListener(v -> {
             Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
             startActivity(intent);
@@ -51,8 +53,8 @@ public class MainActivity extends Activity {
         layout.addView(spacer1);
 
         // 2. Notification Access
-        Button notifBtn = new Button(this);
-        notifBtn.setText("2. Turn ON Notification & OTP Sync\n(Device & App Notifications)");
+        notifBtn = new Button(this);
+        updateNotificationButton();
         notifBtn.setOnClickListener(v -> {
             Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
             startActivity(intent);
@@ -95,7 +97,59 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        updateAccessibilityButton();
+        updateNotificationButton();
         updateBatteryButton();
+    }
+
+    private boolean isAccessibilityServiceEnabled() {
+        String serviceName = getPackageName() + "/" + ClipSyncService.class.getName();
+        String enabledServices = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        if (enabledServices != null) {
+            String[] parts = enabledServices.split(":");
+            for (String part : parts) {
+                if (part.equalsIgnoreCase(serviceName) || part.contains(getPackageName())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void updateAccessibilityButton() {
+        if (a11yBtn == null) return;
+        if (isAccessibilityServiceEnabled()) {
+            a11yBtn.setText("1. Turn ON Clipboard Sync\n✓ Already Allowed (Active)");
+            a11yBtn.setEnabled(false);
+        } else {
+            a11yBtn.setText("1. Turn ON Clipboard Sync\n👉 Tap to Allow (Accessibility Settings)");
+            a11yBtn.setEnabled(true);
+        }
+    }
+
+    private boolean isNotificationServiceEnabled() {
+        String pkgName = getPackageName();
+        String enabledListeners = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        if (enabledListeners != null && !enabledListeners.isEmpty()) {
+            String[] parts = enabledListeners.split(":");
+            for (String part : parts) {
+                if (part.contains(pkgName)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void updateNotificationButton() {
+        if (notifBtn == null) return;
+        if (isNotificationServiceEnabled()) {
+            notifBtn.setText("2. Turn ON Notification & OTP Sync\n✓ Already Allowed (Active)");
+            notifBtn.setEnabled(false);
+        } else {
+            notifBtn.setText("2. Turn ON Notification & OTP Sync\n👉 Tap to Allow (Device & App Notifications)");
+            notifBtn.setEnabled(true);
+        }
     }
 
     private boolean isBatteryOptimized() {

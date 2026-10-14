@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.os.Parcelable;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import org.json.JSONObject;
@@ -18,6 +19,9 @@ public class ClipSyncNotificationService extends NotificationListenerService {
     private static final Pattern BEFORE_PATTERN = Pattern.compile("(?i)\\b([0-9]{4,8})\\b\\s+(?:is\\s+your\\s+)?(?:code|otp|verification|pin|passcode)");
     private static final Pattern GENERAL_DIGITS = Pattern.compile("\\b([0-9]{4,8})\\b");
 
+    private static volatile String lastNotifHash = "";
+    private static volatile long lastNotifTime = 0;
+
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         if (sbn == null) return;
@@ -25,7 +29,7 @@ public class ClipSyncNotificationService extends NotificationListenerService {
         Notification notification = sbn.getNotification();
         if (notification == null) return;
 
-        // 1. Ignore ongoing sticky notifications (e.g. music playback, background downloads)
+        // 1. Ignore ongoing sticky notifications (e.g. music playback, background downloads, WhatsApp voice calls)
         if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) {
             return;
         }
@@ -44,27 +48,94 @@ public class ClipSyncNotificationService extends NotificationListenerService {
         // Extract title
         String title = null;
         CharSequence titleChars = extras.getCharSequence(Notification.EXTRA_TITLE);
-        if (titleChars != null) {
-            title = titleChars.toString();
+        if (titleChars != null && titleChars.length() > 0) {
+            title = titleChars.toString().trim();
         }
-
-        // Extract text / message content
-        String text = null;
-        CharSequence bigTextChars = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
-        if (bigTextChars != null) {
-            text = bigTextChars.toString();
-        } else {
-            CharSequence textChars = extras.getCharSequence(Notification.EXTRA_TEXT);
-            if (textChars != null) {
-                text = textChars.toString();
+        if (title == null || title.isEmpty()) {
+            CharSequence bigTitle = extras.getCharSequence(Notification.EXTRA_TITLE_BIG);
+            if (bigTitle != null && bigTitle.length() > 0) {
+                title = bigTitle.toString().trim();
+            }
+        }
+        if (title == null || title.isEmpty()) {
+            CharSequence convTitle = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE);
+            if (convTitle != null && convTitle.length() > 0) {
+                title = convTitle.toString().trim();
             }
         }
 
-        if ((title == null || title.trim().isEmpty()) && (text == null || text.trim().isEmpty())) {
+        // Extract message text with full support for WhatsApp / MessagingStyle
+        String text = null;
+
+        // A. WhatsApp / Telegram / Signal / Google Messages: MessagingStyle (android.messages)
+        Parcelable[] messages = extras.getParcelableArray(Notification.EXTRA_MESSAGES);
+        if (messages != null && messages.length > 0) {
+            // Find the most recent message with non-empty text
+            for (int i = messages.length - 1; i >= 0; i--) {
+                Parcelable p = messages[i];
+                if (p instanceof Bundle) {
+                    Bundle b = (Bundle) p;
+                    CharSequence msgText = b.getCharSequence("text");
+                    if (msgText != null && msgText.length() > 0) {
+                        text = msgText.toString().trim();
+
+                        CharSequence sender = b.getCharSequence("sender");
+                        if (sender != null && sender.length() > 0) {
+                            String senderStr = sender.toString().trim();
+                            if (title != null && !title.isEmpty() && !title.equalsIgnoreCase(senderStr)) {
+                                title = senderStr + " in " + title;
+                            } else {
+                                title = senderStr;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // B. InboxStyle lines (e.g. stacked notifications, multiple messages)
+        if (text == null || text.isEmpty()) {
+            CharSequence[] lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
+            if (lines != null && lines.length > 0) {
+                for (int i = lines.length - 1; i >= 0; i--) {
+                    if (lines[i] != null && lines[i].length() > 0) {
+                        text = lines[i].toString().trim();
+                        break;
+                    }
+                }
+            }
+        }
+
+        // C. BigTextStyle (e.g. emails, full SMS)
+        if (text == null || text.isEmpty()) {
+            CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
+            if (bigText != null && bigText.length() > 0) {
+                text = bigText.toString().trim();
+            }
+        }
+
+        // D. Standard Notification Text
+        if (text == null || text.isEmpty()) {
+            CharSequence textChars = extras.getCharSequence(Notification.EXTRA_TEXT);
+            if (textChars != null && textChars.length() > 0) {
+                text = textChars.toString().trim();
+            }
+        }
+
+        // E. Fallback Ticker Text
+        if (text == null || text.isEmpty()) {
+            if (notification.tickerText != null && notification.tickerText.length() > 0) {
+                text = notification.tickerText.toString().trim();
+            }
+        }
+
+        // If both title and text are empty, ignore empty noise
+        if ((title == null || title.isEmpty()) && (text == null || text.isEmpty())) {
             return;
         }
 
-        // Friendly App Name (e.g. "Messages", "WhatsApp", "HDFC Bank")
+        // Friendly App Name (e.g. "WhatsApp", "Messages", "Gmail")
         String appName = packageName;
         try {
             PackageManager pm = getPackageManager();
@@ -75,18 +146,28 @@ public class ClipSyncNotificationService extends NotificationListenerService {
         String fullContent = ((title != null ? title : "") + " " + (text != null ? text : "")).trim();
         String otp = extractOtpStatic(fullContent);
 
+        // Deduplicate rapid re-posts by OS / WhatsApp
+        long now = System.currentTimeMillis();
+        String currentHash = appName + ":" + title + ":" + text;
+        if (currentHash.equals(lastNotifHash) && (now - lastNotifTime < 2500)) {
+            return;
+        }
+        lastNotifHash = currentHash;
+        lastNotifTime = now;
+
         try {
             JSONObject obj = new JSONObject();
             obj.put("type", "notification");
             obj.put("app_name", appName);
-            obj.put("title", title != null ? title : appName);
-            obj.put("content", text != null ? text : "");
+            obj.put("title", (title != null && !title.isEmpty()) ? title : appName);
+            obj.put("content", (text != null) ? text : "");
             if (otp != null && !otp.isEmpty()) {
                 obj.put("otp", otp);
             }
-            obj.put("timestamp", sbn.getPostTime());
+            obj.put("timestamp", sbn.getPostTime() > 0 ? sbn.getPostTime() : now);
 
-            ClipSyncService.broadcastJson(obj);
+            // Broadcast directly to peers using static method independent of ClipSyncService instance
+            ClipSyncService.broadcastJson(this, obj);
         } catch (Exception ignored) {}
     }
 

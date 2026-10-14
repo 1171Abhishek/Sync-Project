@@ -73,48 +73,72 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     public static void broadcastJson(JSONObject json) {
-        ClipSyncService service = instance;
-        if (service != null) {
-            new Thread(() -> service.sendJsonToPeers(json)).start();
-        }
+        broadcastJson(instance, json);
     }
 
-    public void sendJsonToPeers(JSONObject json) {
-        try {
-            if (!json.has("device_id")) {
-                json.put("device_id", deviceId);
-            }
-            byte[] secretKey = CryptoUtils.getSecretKey(this);
-            String wireString;
-            if (secretKey != null) {
-                String payload = CryptoUtils.encrypt(json.toString(), secretKey);
-                if (payload != null) {
-                    JSONObject enc = new JSONObject();
-                    enc.put("type", "encrypted");
-                    enc.put("device_id", deviceId);
-                    enc.put("payload", payload);
-                    wireString = enc.toString() + "\n";
+    public static void broadcastJson(Context ctx, JSONObject json) {
+        new Thread(() -> {
+            try {
+                String devId = (instance != null && instance.deviceId != null) ? instance.deviceId : "android-" + (System.currentTimeMillis() % 10000);
+                if (!json.has("device_id")) {
+                    json.put("device_id", devId);
+                }
+
+                Context context = ctx != null ? ctx : instance;
+                byte[] secretKey = context != null ? CryptoUtils.getSecretKey(context) : null;
+                String wireString;
+                if (secretKey != null) {
+                    String payload = CryptoUtils.encrypt(json.toString(), secretKey);
+                    if (payload != null) {
+                        JSONObject enc = new JSONObject();
+                        enc.put("type", "encrypted");
+                        enc.put("device_id", devId);
+                        enc.put("payload", payload);
+                        wireString = enc.toString() + "\n";
+                    } else {
+                        wireString = json.toString() + "\n";
+                    }
                 } else {
                     wireString = json.toString() + "\n";
                 }
-            } else {
-                wireString = json.toString() + "\n";
-            }
-            byte[] bytes = wireString.getBytes(StandardCharsets.UTF_8);
+                byte[] bytes = wireString.getBytes(StandardCharsets.UTF_8);
 
-            for (String hostIp : peers.keySet()) {
-                Socket socket = peers.get(hostIp);
-                if (socket != null && !socket.isClosed()) {
+                // If currently no peers connected, try to reconnect to last known peer IP
+                if (peers.isEmpty() && context != null) {
                     try {
-                        OutputStream out = socket.getOutputStream();
-                        out.write(bytes);
-                        out.flush();
-                    } catch (Exception e) {
-                        peers.remove(hostIp, socket);
+                        SharedPreferences prefs = context.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
+                        String lastIp = prefs.getString("last_peer_ip", null);
+                        if (lastIp != null && !lastIp.isEmpty()) {
+                            Socket s = new Socket();
+                            s.connect(new InetSocketAddress(lastIp, TCP_PORT), 2000);
+                            s.setKeepAlive(true);
+                            s.setTcpNoDelay(true);
+                            peers.put(lastIp, s);
+                            if (instance != null) {
+                                new Thread(() -> instance.handlePeer(s)).start();
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+
+                for (String hostIp : peers.keySet()) {
+                    Socket socket = peers.get(hostIp);
+                    if (socket != null && !socket.isClosed()) {
+                        try {
+                            OutputStream out = socket.getOutputStream();
+                            out.write(bytes);
+                            out.flush();
+                        } catch (Exception e) {
+                            peers.remove(hostIp, socket);
+                        }
                     }
                 }
-            }
-        } catch (Exception ignored) {}
+            } catch (Exception ignored) {}
+        }).start();
+    }
+
+    public void sendJsonToPeers(JSONObject json) {
+        broadcastJson(this, json);
     }
 
     @Override
