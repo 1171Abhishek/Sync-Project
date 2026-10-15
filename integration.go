@@ -39,6 +39,13 @@ func ensureDesktopIntegrations(verbose bool) {
 			fmt.Printf("⚠️  Nautilus script check: %v\n", err)
 		}
 	}
+
+	// 3. User systemd service
+	if err := ensureUserService(execPath, verbose); err != nil {
+		if verbose {
+			fmt.Printf("⚠️  User systemd service check: %v\n", err)
+		}
+	}
 }
 
 func ensureGNOMEShortcut(execPath string, verbose bool) error {
@@ -179,6 +186,52 @@ func ensureNautilusScript(execPath string, verbose bool) error {
 
 	if verbose {
 		fmt.Printf("📁 Automatically created Nautilus right-click action: Right-click file -> Scripts -> \"Send to Phone (ClipSync)\"\n")
+	}
+	return nil
+}
+
+func ensureUserService(execPath string, verbose bool) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	userSystemdDir := filepath.Join(homeDir, ".config", "systemd", "user")
+	if err := os.MkdirAll(userSystemdDir, 0755); err != nil {
+		return err
+	}
+
+	serviceFile := filepath.Join(userSystemdDir, "clip-sync.service")
+	desiredContent := fmt.Sprintf(`[Unit]
+Description=ClipSync - Cross-device Linux/Android Continuity Daemon
+Documentation=https://github.com/1171Abhishek/Sync-Project
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%s
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+`, execPath)
+
+	if existing, err := os.ReadFile(serviceFile); err == nil {
+		if string(existing) == desiredContent {
+			if verbose {
+				fmt.Printf("✓ User systemd service is up to date: %s\n", serviceFile)
+			}
+			return nil
+		}
+	}
+
+	if err := os.WriteFile(serviceFile, []byte(desiredContent), 0644); err != nil {
+		return err
+	}
+
+	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	if verbose {
+		fmt.Printf("⚙️ Automatically registered user systemd service: %s\n", serviceFile)
 	}
 	return nil
 }

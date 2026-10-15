@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -34,11 +35,26 @@ public class MainActivity extends Activity {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(60, 60, 60, 60);
 
+        LinearLayout headerLayout = new LinearLayout(this);
+        headerLayout.setOrientation(LinearLayout.HORIZONTAL);
+        headerLayout.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.mipmap.ic_launcher);
+        int logoSize = (int) (44 * getResources().getDisplayMetrics().density);
+        LinearLayout.LayoutParams logoParams = new LinearLayout.LayoutParams(logoSize, logoSize);
+        logoParams.setMargins(0, 0, (int) (12 * getResources().getDisplayMetrics().density), 0);
+        logo.setLayoutParams(logoParams);
+        headerLayout.addView(logo);
+
         TextView title = new TextView(this);
         title.setText("ClipSync");
         title.setTextSize(26);
         title.setTextColor(Color.BLACK);
-        layout.addView(title);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        headerLayout.addView(title);
+
+        layout.addView(headerLayout);
 
         TextView desc = new TextView(this);
         desc.setText("\nSeamless local continuity with your Linux PC.\nTo enable features, please grant the permissions below:\n");
