@@ -35,8 +35,10 @@ output.json
 # Linux Packaging Outputs
 dist/rpmbuild/
 dist/deb_build/
+dist/arch_build/
 *.rpm
 *.deb
+*.pkg.tar.*
 
 # Android Secrets & Local Configurations
 local.properties

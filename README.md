@@ -82,7 +82,17 @@ Enable and start the background user service:
 systemctl --user enable --now clip-sync
 ```
 
-#### Option C: Build & Run from Source
+#### Option C: Install on Arch Linux (Arch, Manjaro, EndeavourOS)
+If you built or downloaded the Arch package:
+```bash
+sudo pacman -U ./dist/clip-sync-1.0.0-1-x86_64.pkg.tar.zst
+```
+Enable and start the background user service:
+```bash
+systemctl --user enable --now clip-sync
+```
+
+#### Option D: Build & Run from Source
 Prerequisites:
 - **Go** (1.20+)
 - Wayland or X11 clipboard tools:
@@ -155,13 +165,20 @@ Compile stripped binary and generate DEB:
 ```
 Result: `dist/clip-sync_*_amd64.deb`
 
+### Build Arch Linux Package (Arch / Manjaro / EndeavourOS)
+Compile stripped binary and generate Arch package:
+```bash
+./build-arch.sh
+```
+Result: `dist/clip-sync-*-x86_64.pkg.tar.zst`
+
 ### Build Android APK
 Make sure Android SDK / JDK 17 are installed:
 ```bash
 cd android
 ./gradlew assembleRelease
 ```
-*Tip: Push to any branch on GitHub to automatically trigger signed builds for **APK**, **RPM**, and **DEB** via GitHub Actions.*
+*Tip: Push to any branch on GitHub to automatically trigger signed builds for **APK**, **RPM**, **DEB**, and **Arch Linux** via GitHub Actions.*
 
 ---
 

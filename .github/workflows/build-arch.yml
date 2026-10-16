@@ -1,0 +1,34 @@
+name: Build Arch Linux Package
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build-arch:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Update Pacman & Install Build Tools
+        run: |
+          pacman -Syu --noconfirm --needed git go base-devel
+
+      - name: Configure Git Safe Directory
+        run: |
+          git config --global --add safe.directory "*"
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build Arch Package
+        run: |
+          chmod +x ./build-arch.sh
+          ./build-arch.sh
+
+      - name: Upload Arch Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipSync-Arch-Linux
+          path: dist/*.pkg.tar.*
