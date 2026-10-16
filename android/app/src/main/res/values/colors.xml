@@ -1,4 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Brand / Accent Colors -->
+    <color name="brand_primary">#2563EB</color>
+    <color name="brand_primary_variant">#1D4ED8</color>
+    <color name="brand_accent">#38BDF8</color>
+
+    <!-- Semantic Status Colors -->
+    <color name="status_success">#10B981</color>
+    <color name="status_success_bg">#ECFDF5</color>
+    <color name="status_success_text">#047857</color>
+    <color name="status_success_border">#A7F3D0</color>
+
+    <color name="status_warning">#F59E0B</color>
+    <color name="status_warning_bg">#FFFBEB</color>
+    <color name="status_warning_text">#B45309</color>
+    <color name="status_warning_border">#FDE68A</color>
+
+    <!-- Surfaces & Backgrounds (Light) -->
+    <color name="bg_screen">#F8FAFC</color>
+    <color name="card_surface">#FFFFFF</color>
+    <color name="card_stroke">#E2E8F0</color>
+    <color name="icon_bg_tint">#F1F5F9</color>
+    <color name="icon_tint">#334155</color>
+
+    <!-- Typography (Light) -->
+    <color name="text_primary">#0F172A</color>
+    <color name="text_secondary">#64748B</color>
+    <color name="text_tertiary">#94A3B8</color>
+
+    <!-- Action Button (Light) -->
+    <color name="btn_action_bg">#2563EB</color>
+    <color name="btn_action_text">#FFFFFF</color>
+
+    <!-- Launcher -->
     <color name="ic_launcher_background">#1D1D20</color>
 </resources>

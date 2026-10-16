@@ -1,29 +1,51 @@
 package com.clipsync;
 
-import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.widget.Button;
+import android.view.View;
 import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
-public class MainActivity extends Activity {
-    private Button a11yBtn;
-    private Button notifBtn;
-    private Button batteryBtn;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
+
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
+
+public class MainActivity extends AppCompatActivity {
+
+    // Hero Overview
+    private MaterialCardView cardHeroStatus;
+    private ImageView ivHeroIcon;
+    private TextView tvHeroTitle;
+    private TextView tvHeroSubtitle;
+
+    // Clipboard Sync
+    private MaterialCardView cardClipboard;
+    private TextView tvClipboardActiveBadge;
+    private MaterialButton btnClipboardEnable;
+
+    // Calls & Notifications
+    private MaterialCardView cardNotifications;
+    private TextView tvNotifActiveBadge;
+    private MaterialButton btnNotifEnable;
+
+    // Battery / Background Persistence
+    private MaterialCardView cardBattery;
+    private TextView tvBatteryActiveBadge;
+    private MaterialButton btnBatteryEnable;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
 
+        // Android 13+ runtime permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             java.util.List<String> perms = new java.util.ArrayList<>();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -39,98 +61,122 @@ public class MainActivity extends Activity {
             }
         }
 
-        ScrollView scrollView = new ScrollView(this);
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(60, 60, 60, 60);
+        initViews();
+        setupClickListeners();
+    }
 
-        LinearLayout headerLayout = new LinearLayout(this);
-        headerLayout.setOrientation(LinearLayout.HORIZONTAL);
-        headerLayout.setGravity(android.view.Gravity.CENTER_VERTICAL);
+    private void initViews() {
+        cardHeroStatus = findViewById(R.id.cardHeroStatus);
+        ivHeroIcon = findViewById(R.id.ivHeroIcon);
+        tvHeroTitle = findViewById(R.id.tvHeroTitle);
+        tvHeroSubtitle = findViewById(R.id.tvHeroSubtitle);
 
-        ImageView logo = new ImageView(this);
-        logo.setImageResource(R.mipmap.ic_launcher);
-        int logoSize = (int) (44 * getResources().getDisplayMetrics().density);
-        LinearLayout.LayoutParams logoParams = new LinearLayout.LayoutParams(logoSize, logoSize);
-        logoParams.setMargins(0, 0, (int) (12 * getResources().getDisplayMetrics().density), 0);
-        logo.setLayoutParams(logoParams);
-        headerLayout.addView(logo);
+        cardClipboard = findViewById(R.id.cardClipboard);
+        tvClipboardActiveBadge = findViewById(R.id.tvClipboardActiveBadge);
+        btnClipboardEnable = findViewById(R.id.btnClipboardEnable);
 
-        TextView title = new TextView(this);
-        title.setText("ClipSync");
-        title.setTextSize(26);
-        title.setTextColor(Color.BLACK);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
-        headerLayout.addView(title);
+        cardNotifications = findViewById(R.id.cardNotifications);
+        tvNotifActiveBadge = findViewById(R.id.tvNotifActiveBadge);
+        btnNotifEnable = findViewById(R.id.btnNotifEnable);
 
-        layout.addView(headerLayout);
+        cardBattery = findViewById(R.id.cardBattery);
+        tvBatteryActiveBadge = findViewById(R.id.tvBatteryActiveBadge);
+        btnBatteryEnable = findViewById(R.id.btnBatteryEnable);
+    }
 
-        TextView desc = new TextView(this);
-        desc.setText("\nSeamless local continuity with your Linux PC.\nIncludes Clipboard Sync, Incoming Call Alerts, Phone Battery Alerts, and OTP Auto-Extraction.\nTo enable features, please grant the permissions below:\n");
-        desc.setTextSize(15);
-        layout.addView(desc);
+    private void setupClickListeners() {
+        View.OnClickListener a11yClick = v -> {
+            if (!isAccessibilityServiceEnabled()) {
+                Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+                startActivity(intent);
+            }
+        };
+        cardClipboard.setOnClickListener(a11yClick);
+        btnClipboardEnable.setOnClickListener(a11yClick);
 
-        // 1. Accessibility
-        a11yBtn = new Button(this);
-        updateAccessibilityButton();
-        a11yBtn.setOnClickListener(v -> {
-            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-            startActivity(intent);
-        });
-        layout.addView(a11yBtn);
+        View.OnClickListener notifClick = v -> {
+            if (!isNotificationServiceEnabled()) {
+                Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
+                startActivity(intent);
+            }
+        };
+        cardNotifications.setOnClickListener(notifClick);
+        btnNotifEnable.setOnClickListener(notifClick);
 
-        TextView spacer1 = new TextView(this);
-        spacer1.setText("\n");
-        layout.addView(spacer1);
-
-        // 2. Notification Access
-        notifBtn = new Button(this);
-        updateNotificationButton();
-        notifBtn.setOnClickListener(v -> {
-            Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
-            startActivity(intent);
-        });
-        layout.addView(notifBtn);
-
-        TextView spacer2 = new TextView(this);
-        spacer2.setText("\n");
-        layout.addView(spacer2);
-
-        // 3. Battery Optimization
-        batteryBtn = new Button(this);
-        updateBatteryButton();
-        batteryBtn.setOnClickListener(v -> {
-            requestIgnoreBatteryOptimization();
-        });
-        layout.addView(batteryBtn);
-
-        TextView spacer3 = new TextView(this);
-        spacer3.setText("\n");
-        layout.addView(spacer3);
-
-        // 4. Automatic Security & Encryption Status
-        TextView securityHeader = new TextView(this);
-        securityHeader.setText("4. Security & Encryption");
-        securityHeader.setTextSize(18);
-        securityHeader.setTextColor(Color.BLACK);
-        layout.addView(securityHeader);
-
-        TextView securityStatus = new TextView(this);
-        securityStatus.setText("🔒 100% Automatic End-to-End Encrypted (AES-256-GCM)\nAll clipboard, notifications, URLs, and file drops are automatically encrypted with zero setup required.\n");
-        securityStatus.setTextSize(14);
-        securityStatus.setTextColor(Color.rgb(0, 120, 0));
-        layout.addView(securityStatus);
-
-        scrollView.addView(layout);
-        setContentView(scrollView);
+        View.OnClickListener batteryClick = v -> {
+            if (isBatteryOptimized()) {
+                requestIgnoreBatteryOptimization();
+            }
+        };
+        cardBattery.setOnClickListener(batteryClick);
+        btnBatteryEnable.setOnClickListener(batteryClick);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        updateAccessibilityButton();
-        updateNotificationButton();
-        updateBatteryButton();
+        updateUI();
+    }
+
+    private void updateUI() {
+        boolean a11yActive = isAccessibilityServiceEnabled();
+        boolean notifActive = isNotificationServiceEnabled();
+        boolean batteryUnrestricted = !isBatteryOptimized();
+
+        // 1. Clipboard Card
+        if (a11yActive) {
+            tvClipboardActiveBadge.setVisibility(View.VISIBLE);
+            btnClipboardEnable.setVisibility(View.GONE);
+            cardClipboard.setClickable(false);
+        } else {
+            tvClipboardActiveBadge.setVisibility(View.GONE);
+            btnClipboardEnable.setVisibility(View.VISIBLE);
+            cardClipboard.setClickable(true);
+        }
+
+        // 2. Notification & Calls Card
+        if (notifActive) {
+            tvNotifActiveBadge.setVisibility(View.VISIBLE);
+            btnNotifEnable.setVisibility(View.GONE);
+            cardNotifications.setClickable(false);
+        } else {
+            tvNotifActiveBadge.setVisibility(View.GONE);
+            btnNotifEnable.setVisibility(View.VISIBLE);
+            cardNotifications.setClickable(true);
+        }
+
+        // 3. Battery Optimization Card
+        if (batteryUnrestricted) {
+            tvBatteryActiveBadge.setVisibility(View.VISIBLE);
+            btnBatteryEnable.setVisibility(View.GONE);
+            cardBattery.setClickable(false);
+        } else {
+            tvBatteryActiveBadge.setVisibility(View.GONE);
+            btnBatteryEnable.setVisibility(View.VISIBLE);
+            cardBattery.setClickable(true);
+        }
+
+        // 4. Hero Status Card
+        int missingCount = (a11yActive ? 0 : 1) + (notifActive ? 0 : 1) + (batteryUnrestricted ? 0 : 1);
+        if (missingCount == 0) {
+            cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_success_bg));
+            cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_success_border));
+            ivHeroIcon.setImageResource(R.drawable.ic_check);
+            ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_success_text));
+            tvHeroTitle.setText("All Systems Ready");
+            tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
+            tvHeroSubtitle.setText("Continuous background sync is active and idle");
+            tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
+        } else {
+            cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_warning_bg));
+            cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_warning_border));
+            ivHeroIcon.setImageResource(R.drawable.ic_bolt);
+            ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_warning_text));
+            tvHeroTitle.setText("Setup Incomplete");
+            tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_warning_text));
+            tvHeroSubtitle.setText(missingCount + (missingCount == 1 ? " permission needed" : " permissions needed") + " for full background continuity");
+            tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_warning_text));
+        }
     }
 
     private boolean isAccessibilityServiceEnabled() {
@@ -147,17 +193,6 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    private void updateAccessibilityButton() {
-        if (a11yBtn == null) return;
-        if (isAccessibilityServiceEnabled()) {
-            a11yBtn.setText("1. Turn ON Clipboard Sync\n✓ Already Allowed (Active)");
-            a11yBtn.setEnabled(false);
-        } else {
-            a11yBtn.setText("1. Turn ON Clipboard Sync\n👉 Tap to Allow (Accessibility Settings)");
-            a11yBtn.setEnabled(true);
-        }
-    }
-
     private boolean isNotificationServiceEnabled() {
         String pkgName = getPackageName();
         String enabledListeners = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
@@ -172,17 +207,6 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    private void updateNotificationButton() {
-        if (notifBtn == null) return;
-        if (isNotificationServiceEnabled()) {
-            notifBtn.setText("2. Turn ON Notification, Call & Battery Alerts\n✓ Already Allowed (Active)");
-            notifBtn.setEnabled(false);
-        } else {
-            notifBtn.setText("2. Turn ON Notification, Call & Battery Alerts\n👉 Tap to Allow (Device & App Notifications)");
-            notifBtn.setEnabled(true);
-        }
-    }
-
     private boolean isBatteryOptimized() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
@@ -191,17 +215,6 @@ public class MainActivity extends Activity {
             }
         }
         return false;
-    }
-
-    private void updateBatteryButton() {
-        if (batteryBtn == null) return;
-        if (!isBatteryOptimized()) {
-            batteryBtn.setText("3. Keep Running Always (Allow for Always)\n✓ Already Allowed (Unrestricted)");
-            batteryBtn.setEnabled(false);
-        } else {
-            batteryBtn.setText("3. Keep Running Always (Allow for Always)\n👉 Tap to Allow Always (No Disconnects)");
-            batteryBtn.setEnabled(true);
-        }
     }
 
     private void requestIgnoreBatteryOptimization() {
