@@ -30,6 +30,9 @@ type SyncMessage struct {
 	Timestamp int64  `json:"timestamp,omitempty"`
 	Payload   string `json:"payload,omitempty"` // Base64 ciphertext for AES-256-GCM
 
+	// Device info
+	DeviceName string `json:"device_name,omitempty"`
+
 	// Battery Fields
 	BatteryLevel  int    `json:"battery_level,omitempty"`
 	IsCharging    bool   `json:"is_charging,omitempty"`
@@ -41,12 +44,20 @@ type SyncMessage struct {
 	PhoneNumber string `json:"phone_number,omitempty"` // e.g. "+1234567890"
 }
 
+type PeerDevice struct {
+	IP         string `json:"ip"`
+	DeviceID   string `json:"device_id,omitempty"`
+	DeviceName string `json:"device_name,omitempty"`
+}
+
 type SyncNode struct {
 	deviceID     string
+	deviceName   string
 	lastHash     string
 	lastReceived string
 	mu           sync.Mutex
 	peers        map[string]net.Conn
+	peerNames    map[string]string
 	peersLock    sync.Mutex
 	nativeClip   bool
 	crypto       *CryptoManager

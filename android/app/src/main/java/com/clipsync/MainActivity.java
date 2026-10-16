@@ -12,16 +12,24 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.View;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.card.MaterialCardView;
 
+import java.util.Map;
+
 public class MainActivity extends AppCompatActivity {
+
+    // Header
+    private TextView tvDeviceNameSubtitle;
 
     // Hero Overview
     private MaterialCardView cardHeroStatus;
@@ -88,6 +96,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initViews() {
+        tvDeviceNameSubtitle = findViewById(R.id.tvDeviceNameSubtitle);
         switchMasterSync = findViewById(R.id.switchMasterSync);
 
         cardHeroStatus = findViewById(R.id.cardHeroStatus);
@@ -106,6 +115,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupClickListeners() {
+        if (tvDeviceNameSubtitle != null) {
+            tvDeviceNameSubtitle.setOnClickListener(v -> showRenameDeviceDialog());
+        }
+
+        if (cardHeroStatus != null) {
+            cardHeroStatus.setOnClickListener(v -> showConnectedDevicesDialog());
+        }
+
         if (switchMasterSync != null) {
             switchMasterSync.setChecked(!ClipSyncService.isSyncPaused(this));
             switchMasterSync.setOnCheckedChangeListener((buttonView, isChecked) -> {

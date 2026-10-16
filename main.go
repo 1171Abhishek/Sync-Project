@@ -147,8 +147,8 @@ func main() {
 	node.startClipboardWatcher()
 }
 
-func getActivePeersList() []string {
-	var activePeers []string
+func getActivePeersList() []PeerDevice {
+	var activePeers []PeerDevice
 	if data, err := os.ReadFile(ActivePeersFile); err == nil {
 		_ = json.Unmarshal(data, &activePeers)
 	}
@@ -156,7 +156,10 @@ func getActivePeersList() []string {
 		if data, err := os.ReadFile(PeerFile); err == nil {
 			ip := strings.TrimSpace(string(data))
 			if ip != "" {
-				activePeers = append(activePeers, ip)
+				activePeers = append(activePeers, PeerDevice{
+					IP:         ip,
+					DeviceName: "Phone",
+				})
 			}
 		}
 	}
@@ -173,7 +176,11 @@ func showConnectedDevices() {
 
 	fmt.Printf("📱 Connected Devices (%d):\n", len(activePeers))
 	for i, peer := range activePeers {
-		fmt.Printf("   %d. 🟢 %s (Live)\n", i+1, peer)
+		name := peer.DeviceName
+		if name == "" {
+			name = "Phone"
+		}
+		fmt.Printf("   %d. 🟢 %s (%s) [Live]\n", i+1, name, peer.IP)
 	}
 }
 
@@ -195,9 +202,21 @@ func showPhoneStatus() {
 	}
 
 	if peerCount == 1 {
-		fmt.Printf("🟢 Connected Device: %s\n", activePeers[0])
+		name := activePeers[0].DeviceName
+		if name == "" {
+			name = "Phone"
+		}
+		fmt.Printf("🟢 Connected Device: %s (%s)\n", name, activePeers[0].IP)
 	} else {
-		fmt.Printf("🟢 Connected Devices (%d): %s\n", peerCount, strings.Join(activePeers, ", "))
+		var summaries []string
+		for _, p := range activePeers {
+			name := p.DeviceName
+			if name == "" {
+				name = "Device"
+			}
+			summaries = append(summaries, fmt.Sprintf("%s (%s)", name, p.IP))
+		}
+		fmt.Printf("🟢 Connected Devices (%d): %s\n", peerCount, strings.Join(summaries, ", "))
 	}
 
 	if data, err := os.ReadFile(BatteryFile); err == nil {

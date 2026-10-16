@@ -29,7 +29,9 @@ func NewSyncNode() *SyncNode {
 
 	node := &SyncNode{
 		deviceID:   fmt.Sprintf("%s-%d", hostname, time.Now().Unix()%10000),
+		deviceName: hostname,
 		peers:      make(map[string]net.Conn),
+		peerNames:  make(map[string]string),
 		nativeClip: hasNative,
 		crypto:     crypto,
 	}
@@ -42,14 +44,21 @@ func NewSyncNode() *SyncNode {
 }
 
 func (n *SyncNode) syncPeersFileLocked() {
-	ips := make([]string, 0, len(n.peers))
+	devices := make([]PeerDevice, 0, len(n.peers))
 	for ip := range n.peers {
-		ips = append(ips, ip)
+		name := n.peerNames[ip]
+		if name == "" {
+			name = "Phone"
+		}
+		devices = append(devices, PeerDevice{
+			IP:         ip,
+			DeviceName: name,
+		})
 	}
-	data, _ := json.Marshal(ips)
+	data, _ := json.Marshal(devices)
 	_ = os.WriteFile(ActivePeersFile, data, 0644)
-	if len(ips) > 0 {
-		_ = os.WriteFile(PeerFile, []byte(ips[0]), 0644)
+	if len(devices) > 0 {
+		_ = os.WriteFile(PeerFile, []byte(devices[0].IP), 0644)
 	} else {
 		_ = os.Remove(PeerFile)
 	}
@@ -124,10 +133,18 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 
 	fmt.Printf("⚡ Connected with peer: %s\n", hostIP)
 
+	// Send handshake with local device name
+	go n.BroadcastMessage(SyncMessage{
+		Type:       "handshake",
+		DeviceID:   n.deviceID,
+		DeviceName: n.deviceName,
+	})
+
 	defer func() {
 		n.peersLock.Lock()
 		if currConn, exists := n.peers[hostIP]; exists && currConn == conn {
 			delete(n.peers, hostIP)
+			delete(n.peerNames, hostIP)
 		}
 		n.syncPeersFileLocked()
 		n.peersLock.Unlock()
@@ -159,8 +176,17 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 			msg = innerMsg
 		}
 
+		if msg.DeviceName != "" {
+			n.peersLock.Lock()
+			if n.peerNames[hostIP] != msg.DeviceName {
+				n.peerNames[hostIP] = msg.DeviceName
+				n.syncPeersFileLocked()
+			}
+			n.peersLock.Unlock()
+		}
+
 		switch msg.Type {
-		case "ping", "pong":
+		case "ping", "pong", "handshake":
 			continue
 
 		case "url":

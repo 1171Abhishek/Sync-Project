@@ -48,7 +48,7 @@ func (n *SyncNode) startUDPDiscovery() {
 		}
 		defer conn.Close()
 
-		beacon := []byte(fmt.Sprintf("CLIP_SYNC:%s", n.deviceID))
+		beacon := []byte(fmt.Sprintf("CLIP_SYNC:%s:%s", n.deviceID, n.deviceName))
 		for {
 			_, _ = conn.Write(beacon)
 			time.Sleep(4 * time.Second)
@@ -73,7 +73,13 @@ func (n *SyncNode) startUDPDiscovery() {
 		}
 		msg := string(buf[:nBytes])
 		if strings.HasPrefix(msg, "CLIP_SYNC:") {
-			peerID := strings.TrimPrefix(msg, "CLIP_SYNC:")
+			payload := strings.TrimPrefix(msg, "CLIP_SYNC:")
+			parts := strings.Split(payload, ":")
+			peerID := parts[0]
+			peerName := ""
+			if len(parts) > 1 {
+				peerName = parts[1]
+			}
 			remoteIP := strings.TrimPrefix(remoteAddr.IP.String(), "::ffff:")
 
 			// Ignore discovery beacons coming from ourselves
@@ -85,13 +91,22 @@ func (n *SyncNode) startUDPDiscovery() {
 			if peerID == "probe" || peerID == "ping" {
 				replyConn, err := net.DialUDP("udp", nil, remoteAddr)
 				if err == nil {
-					_, _ = replyConn.Write([]byte(fmt.Sprintf("CLIP_SYNC:%s", n.deviceID)))
+					_, _ = replyConn.Write([]byte(fmt.Sprintf("CLIP_SYNC:%s:%s", n.deviceID, n.deviceName)))
 					replyConn.Close()
 				}
 				continue
 			}
 
 			if peerID != n.deviceID {
+				if peerName != "" {
+					n.peersLock.Lock()
+					if n.peerNames[remoteIP] != peerName {
+						n.peerNames[remoteIP] = peerName
+						n.syncPeersFileLocked()
+					}
+					n.peersLock.Unlock()
+				}
+
 				n.peersLock.Lock()
 				_, alreadyConnected := n.peers[remoteIP]
 				n.peersLock.Unlock()
