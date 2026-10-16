@@ -107,8 +107,16 @@ func (n *SyncNode) startFileServer() {
 		WriteTimeout: 10 * time.Minute,
 	}
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Printf("⚠️ File server warning: %v\n", err)
+	for attempts := 0; attempts < 5; attempts++ {
+		err := server.ListenAndServe()
+		if err == nil || err == http.ErrServerClosed {
+			break
+		}
+		if attempts < 4 {
+			time.Sleep(2 * time.Second)
+		} else {
+			fmt.Printf("⚠️ File server warning: %v\n", err)
+		}
 	}
 }
 

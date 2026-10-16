@@ -1,7 +1,8 @@
 [Unit]
 Description=ClipSync - Cross-device Linux/Android Continuity Daemon
 Documentation=https://github.com/1171Abhishek/Sync-Project
-After=network.target
+PartOf=graphical-session.target
+After=graphical-session.target network.target
 
 [Service]
 Type=simple

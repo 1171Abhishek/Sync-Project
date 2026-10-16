@@ -11,7 +11,42 @@ import (
 	"time"
 )
 
+func initEnvironment() {
+	uid := os.Getuid()
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		candidate := fmt.Sprintf("/run/user/%d", uid)
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			runtimeDir = candidate
+			_ = os.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+		}
+	}
+
+	if os.Getenv("WAYLAND_DISPLAY") == "" && runtimeDir != "" {
+		for i := 0; i < 4; i++ {
+			socket := fmt.Sprintf("%s/wayland-%d", runtimeDir, i)
+			if fileExists(socket) {
+				_ = os.Setenv("WAYLAND_DISPLAY", fmt.Sprintf("wayland-%d", i))
+				break
+			}
+		}
+	}
+
+	if os.Getenv("DISPLAY") == "" {
+		_ = os.Setenv("DISPLAY", ":0")
+	}
+
+	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" && runtimeDir != "" {
+		busPath := fmt.Sprintf("%s/bus", runtimeDir)
+		if fileExists(busPath) {
+			_ = os.Setenv("DBUS_SESSION_BUS_ADDRESS", fmt.Sprintf("unix:path=%s", busPath))
+		}
+	}
+}
+
 func main() {
+	initEnvironment()
+
 	if len(os.Args) > 1 {
 		arg := os.Args[1]
 

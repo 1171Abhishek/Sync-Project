@@ -74,6 +74,28 @@ public class ClipSyncService extends AccessibilityService {
         return lastPeerIp;
     }
 
+    public static boolean isConnectedToPeer() {
+        return !peers.isEmpty();
+    }
+
+    public static String getConnectedPeerSummary() {
+        if (peers.isEmpty()) {
+            return null;
+        }
+        return peers.keySet().iterator().next();
+    }
+
+    public static void notifyPeerStateChanged() {
+        ClipSyncService service = instance;
+        if (service != null) {
+            try {
+                Intent intent = new Intent("com.clipsync.PEER_STATE_CHANGED");
+                intent.setPackage(service.getPackageName());
+                service.sendBroadcast(intent);
+            } catch (Exception ignored) {}
+        }
+    }
+
     public static void broadcastText(String text) {
         ClipSyncService service = instance;
         if (service != null) {
@@ -626,6 +648,7 @@ public class ClipSyncService extends AccessibilityService {
         if (existing == null || existing.isClosed() || !existing.isConnected()) {
             peers.put(hostIp, socket);
             isPrimary = true;
+            notifyPeerStateChanged();
         }
         if (isPrimary) {
             sendCurrentBatteryStatus();
@@ -726,6 +749,7 @@ public class ClipSyncService extends AccessibilityService {
         } finally {
             if (isPrimary) {
                 peers.remove(hostIp, socket);
+                notifyPeerStateChanged();
             }
             try { socket.close(); } catch (Exception ignored) {}
         }

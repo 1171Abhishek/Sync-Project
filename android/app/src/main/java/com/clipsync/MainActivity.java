@@ -1,10 +1,14 @@
 package com.clipsync;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.View;
@@ -36,6 +40,24 @@ public class MainActivity extends AppCompatActivity {
     // Battery / Background Persistence
     private TextView tvBatteryActiveBadge;
     private MaterialButton btnBatteryEnable;
+
+    // Real-time peer connection tracking
+    private final Handler statusHandler = new Handler(Looper.getMainLooper());
+    private final Runnable statusRefresher = new Runnable() {
+        @Override
+        public void run() {
+            updateUI();
+            statusHandler.postDelayed(this, 1500);
+        }
+    };
+
+    private final BroadcastReceiver peerReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            updateUI();
+        }
+    };
+    private boolean isReceiverRegistered = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -103,7 +125,30 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        updateUI();
+        if (!isReceiverRegistered) {
+            try {
+                IntentFilter filter = new IntentFilter("com.clipsync.PEER_STATE_CHANGED");
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(peerReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+                } else {
+                    registerReceiver(peerReceiver, filter);
+                }
+                isReceiverRegistered = true;
+            } catch (Exception ignored) {}
+        }
+        statusHandler.post(statusRefresher);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        statusHandler.removeCallbacks(statusRefresher);
+        if (isReceiverRegistered) {
+            try {
+                unregisterReceiver(peerReceiver);
+            } catch (Exception ignored) {}
+            isReceiverRegistered = false;
+        }
     }
 
     private void updateUI() {
@@ -138,26 +183,44 @@ public class MainActivity extends AppCompatActivity {
             btnBatteryEnable.setVisibility(View.VISIBLE);
         }
 
-        // 4. Hero Status Card
+        // 4. Hero Status Card (Real-Time Device Connection State)
         int missingCount = (a11yActive ? 0 : 1) + (notifActive ? 0 : 1) + (batteryUnrestricted ? 0 : 1);
-        if (missingCount == 0) {
-            cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_success_bg));
-            cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_success_border));
-            ivHeroIcon.setImageResource(R.drawable.ic_check);
-            ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_success_text));
-            tvHeroTitle.setText("All Systems Ready");
-            tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
-            tvHeroSubtitle.setText("Continuous background sync is active and idle");
-            tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
-        } else {
+        if (missingCount > 0) {
+            // State 1: Permissions need attention
             cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_warning_bg));
             cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_warning_border));
             ivHeroIcon.setImageResource(R.drawable.ic_bolt);
             ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_warning_text));
             tvHeroTitle.setText("Setup Incomplete");
             tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_warning_text));
-            tvHeroSubtitle.setText(missingCount + (missingCount == 1 ? " permission needed" : " permissions needed") + " for full background continuity");
+            tvHeroSubtitle.setText(missingCount + (missingCount == 1 ? " permission needed" : " permissions needed") + " for background sync");
             tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_warning_text));
+        } else {
+            // Permissions are all granted! Check real-time active connection:
+            boolean connected = ClipSyncService.isConnectedToPeer();
+            String peerIp = ClipSyncService.getConnectedPeerSummary();
+
+            if (connected && peerIp != null && !peerIp.isEmpty()) {
+                // State 2: 🟢 Connected to PC in real time!
+                cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_success_bg));
+                cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_success_border));
+                ivHeroIcon.setImageResource(R.drawable.ic_check);
+                ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_success_text));
+                tvHeroTitle.setText("🟢 Connected to PC");
+                tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
+                tvHeroSubtitle.setText("Live sync active • " + peerIp);
+                tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
+            } else {
+                // State 3: 📡 Searching for PC on Wi-Fi
+                cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_searching_bg));
+                cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_searching_border));
+                ivHeroIcon.setImageResource(R.drawable.ic_bolt);
+                ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_searching_text));
+                tvHeroTitle.setText("📡 Searching for PC...");
+                tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_searching_text));
+                tvHeroSubtitle.setText("Waiting for Linux daemon on local Wi-Fi");
+                tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_searching_text));
+            }
         }
     }
 

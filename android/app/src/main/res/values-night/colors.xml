@@ -16,6 +16,11 @@
     <color name="status_warning_text">#FDE68A</color>
     <color name="status_warning_border">#B45309</color>
 
+    <color name="status_searching">#3B82F6</color>
+    <color name="status_searching_bg">#111C33</color>
+    <color name="status_searching_text">#93C5FD</color>
+    <color name="status_searching_border">#1E3A8A</color>
+
     <!-- Surfaces & Backgrounds (Dark) -->
     <color name="bg_screen">#0B0F19</color>
     <color name="card_surface">#131B2E</color>
