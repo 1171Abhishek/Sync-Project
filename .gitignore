@@ -32,6 +32,12 @@ captures/
 *.dex
 output.json
 
+# Linux Packaging Outputs
+dist/rpmbuild/
+dist/deb_build/
+*.rpm
+*.deb
+
 # Android Secrets & Local Configurations
 local.properties
 android/local.properties

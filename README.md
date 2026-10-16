@@ -67,13 +67,22 @@ If you built or downloaded the RPM package:
 ```bash
 sudo dnf install dist/clip-sync-1.0.0-1.fc44.x86_64.rpm
 ```
-
 Enable and start the background user service:
 ```bash
 systemctl --user enable --now clip-sync
 ```
 
-#### Option B: Build & Run from Source
+#### Option B: Install via DEB (Ubuntu, Debian, Linux Mint, Pop!_OS)
+If you built or downloaded the DEB package:
+```bash
+sudo apt install ./dist/clip-sync_1.0.0-1_amd64.deb
+```
+Enable and start the background user service:
+```bash
+systemctl --user enable --now clip-sync
+```
+
+#### Option C: Build & Run from Source
 Prerequisites:
 - **Go** (1.20+)
 - Wayland or X11 clipboard tools:
@@ -132,13 +141,19 @@ go build -o clip-sync .
 
 ## 📦 Building Packages
 
-### Build RPM Package (Linux)
-The repository includes an automated packaging script that compiles the binary with stripped symbols and runs `rpmbuild`:
-
+### Build RPM Package (Fedora / RHEL / openSUSE)
+Compile stripped binary and generate RPM:
 ```bash
 ./build-rpm.sh
 ```
-The resulting package will be placed in `dist/clip-sync-*.x86_64.rpm`.
+Result: `dist/clip-sync-*.x86_64.rpm`
+
+### Build DEB Package (Ubuntu / Debian / Linux Mint)
+Compile stripped binary and generate DEB:
+```bash
+./build-deb.sh
+```
+Result: `dist/clip-sync_*_amd64.deb`
 
 ### Build Android APK
 Make sure Android SDK / JDK 17 are installed:
@@ -146,7 +161,7 @@ Make sure Android SDK / JDK 17 are installed:
 cd android
 ./gradlew assembleRelease
 ```
-Or push to any branch on GitHub to trigger the automated signed build via [GitHub Actions](.github/workflows/build-apk.yml).
+*Tip: Push to any branch on GitHub to automatically trigger signed builds for **APK**, **RPM**, and **DEB** via GitHub Actions.*
 
 ---
 
