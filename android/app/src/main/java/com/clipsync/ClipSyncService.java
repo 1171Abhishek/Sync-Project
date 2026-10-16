@@ -66,6 +66,93 @@ public class ClipSyncService extends AccessibilityService {
     private boolean lastReportedCharging = false;
     private long lastBatteryBroadcastTime = 0;
 
+    public static final String ACTION_PAUSE_SYNC = "com.clipsync.ACTION_PAUSE_SYNC";
+    public static final String ACTION_RESUME_SYNC = "com.clipsync.ACTION_RESUME_SYNC";
+    public static final String ACTION_TOGGLE_SYNC = "com.clipsync.ACTION_TOGGLE_SYNC";
+    public static final String SYNC_STATE_CHANGED = "com.clipsync.SYNC_STATE_CHANGED";
+    private static final String PREF_SYNC_PAUSED = "sync_paused";
+    private BroadcastReceiver controlReceiver;
+
+    public static boolean isSyncPaused(Context ctx) {
+        if (ctx == null) return false;
+        try {
+            return ctx.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE)
+                      .getBoolean(PREF_SYNC_PAUSED, false);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static void setSyncPaused(Context ctx, boolean paused) {
+        if (ctx == null) return;
+        try {
+            ctx.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE)
+               .edit()
+               .putBoolean(PREF_SYNC_PAUSED, paused)
+               .apply();
+        } catch (Exception ignored) {}
+
+        ClipSyncService service = instance;
+        if (service != null) {
+            service.onSyncPauseStateChanged(paused);
+        }
+
+        try {
+            Intent intent = new Intent(SYNC_STATE_CHANGED);
+            intent.setPackage(ctx.getPackageName());
+            ctx.sendBroadcast(intent);
+        } catch (Exception ignored) {}
+    }
+
+    private void onSyncPauseStateChanged(boolean paused) {
+        if (paused) {
+            disconnectAllPeers();
+            try {
+                if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
+                if (multicastLock != null && multicastLock.isHeld()) multicastLock.release();
+                if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+            } catch (Exception ignored) {}
+        } else {
+            try {
+                if (wifiLock != null && !wifiLock.isHeld()) wifiLock.acquire();
+                if (multicastLock != null && !multicastLock.isHeld()) multicastLock.acquire();
+            } catch (Exception ignored) {}
+            new Thread(this::sendDiscoveryProbe).start();
+        }
+        updateForegroundNotification();
+        notifyPeerStateChanged();
+    }
+
+    private void disconnectAllPeers() {
+        for (java.util.Map.Entry<String, Socket> entry : peers.entrySet()) {
+            try {
+                Socket s = entry.getValue();
+                if (s != null && !s.isClosed()) {
+                    s.close();
+                }
+            } catch (Exception ignored) {}
+        }
+        peers.clear();
+        lastPeerIp = null;
+    }
+
+    private void sendDiscoveryProbe() {
+        try (DatagramSocket socket = new DatagramSocket()) {
+            socket.setBroadcast(true);
+            byte[] beacon = ("CLIP_SYNC:" + deviceId).getBytes(StandardCharsets.UTF_8);
+            InetAddress bcast = InetAddress.getByName("255.255.255.255");
+            socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
+        } catch (Exception ignored) {}
+    }
+
+    public void acquireWakeLockBriefly(long millis) {
+        try {
+            if (wakeLock != null) {
+                wakeLock.acquire(millis);
+            }
+        } catch (Exception ignored) {}
+    }
+
     public static Set<String> getActivePeers() {
         return peers.keySet();
     }
@@ -89,6 +176,7 @@ public class ClipSyncService extends AccessibilityService {
         ClipSyncService service = instance;
         if (service != null) {
             try {
+                service.updateForegroundNotification();
                 Intent intent = new Intent("com.clipsync.PEER_STATE_CHANGED");
                 intent.setPackage(service.getPackageName());
                 service.sendBroadcast(intent);
@@ -108,6 +196,8 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     public static void broadcastJson(Context ctx, JSONObject json) {
+        Context context = ctx != null ? ctx : instance;
+        if (isSyncPaused(context)) return;
         new Thread(() -> {
             try {
                 String devId = (instance != null && instance.deviceId != null) ? instance.deviceId : "android-" + (System.currentTimeMillis() % 10000);
@@ -115,7 +205,6 @@ public class ClipSyncService extends AccessibilityService {
                     json.put("device_id", devId);
                 }
 
-                Context context = ctx != null ? ctx : instance;
                 byte[] secretKey = context != null ? CryptoUtils.getSecretKey(context) : null;
                 String wireString;
                 if (secretKey != null) {
@@ -185,23 +274,28 @@ public class ClipSyncService extends AccessibilityService {
             if (pm != null) {
                 wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ClipSync:WakeLock");
                 wakeLock.setReferenceCounted(false);
-                wakeLock.acquire(24 * 60 * 60 * 1000L);
+                // No permanent 24h wake lock held! Saves phone CPU battery.
             }
         } catch (Exception ignored) {}
 
         try {
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null) {
-                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "ClipSync:WifiLock");
+                // Use standard WIFI_MODE_FULL instead of HIGH_PERF to allow Wi-Fi power saving
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "ClipSync:WifiLock");
                 wifiLock.setReferenceCounted(false);
-                wifiLock.acquire();
 
                 multicastLock = wm.createMulticastLock("ClipSync:MulticastLock");
                 multicastLock.setReferenceCounted(false);
-                multicastLock.acquire();
+
+                if (!isSyncPaused(this)) {
+                    wifiLock.acquire();
+                    multicastLock.acquire();
+                }
             }
         } catch (Exception ignored) {}
 
+        setupControlReceiver();
         startForegroundServiceNotification();
 
         new Thread(this::startTcpServer).start();
@@ -219,12 +313,43 @@ public class ClipSyncService extends AccessibilityService {
         });
     }
 
+    private void setupControlReceiver() {
+        controlReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) return;
+                String action = intent.getAction();
+                if (ACTION_PAUSE_SYNC.equals(action)) {
+                    setSyncPaused(context, true);
+                } else if (ACTION_RESUME_SYNC.equals(action)) {
+                    setSyncPaused(context, false);
+                } else if (ACTION_TOGGLE_SYNC.equals(action)) {
+                    setSyncPaused(context, !isSyncPaused(context));
+                }
+            }
+        };
+        try {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(ACTION_PAUSE_SYNC);
+            filter.addAction(ACTION_RESUME_SYNC);
+            filter.addAction(ACTION_TOGGLE_SYNC);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(controlReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(controlReceiver, filter);
+            }
+        } catch (Exception ignored) {}
+    }
+
     @Override
     public void onDestroy() {
         if (instance == this) {
             instance = null;
         }
         try {
+            if (controlReceiver != null) {
+                unregisterReceiver(controlReceiver);
+            }
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();
             }
@@ -243,7 +368,7 @@ public class ClipSyncService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (event == null) return;
+        if (event == null || isSyncPaused(this)) return;
         int eventType = event.getEventType();
         CharSequence pkgCs = event.getPackageName();
         String pkg = pkgCs != null ? pkgCs.toString().toLowerCase() : "";
@@ -566,6 +691,7 @@ public class ClipSyncService extends AccessibilityService {
     public void onInterrupt() {}
 
     private void checkClipboard() {
+        if (isSyncPaused(this)) return;
         try {
             if (clipboard == null || !clipboard.hasPrimaryClip()) return;
             ClipData clip = clipboard.getPrimaryClip();
@@ -579,6 +705,7 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void processAndBroadcast(String str) {
+        if (isSyncPaused(this)) return;
         if (str == null) return;
         String clean = str.trim();
         if (clean.isEmpty()) return;
@@ -594,6 +721,7 @@ public class ClipSyncService extends AccessibilityService {
             return;
         }
 
+        acquireWakeLockBriefly(3000);
         lastBroadcastedContent = clean;
         lastBroadcastedTime = now;
         String hash = hash(clean);
@@ -617,6 +745,10 @@ public class ClipSyncService extends AccessibilityService {
             try (ServerSocket server = new ServerSocket(TCP_PORT)) {
                 while (true) {
                     Socket socket = server.accept();
+                    if (isSyncPaused(this)) {
+                        try { socket.close(); } catch (Exception ignored) {}
+                        continue;
+                    }
                     new Thread(() -> handlePeer(socket)).start();
                 }
             } catch (Exception e) {
@@ -657,6 +789,7 @@ public class ClipSyncService extends AccessibilityService {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                acquireWakeLockBriefly(3000);
                 JSONObject obj = new JSONObject(line);
                 String type = obj.optString("type", "clipboard");
 
@@ -760,6 +893,10 @@ public class ClipSyncService extends AccessibilityService {
             try (ServerSocket server = new ServerSocket(FILE_PORT)) {
                 while (true) {
                     Socket socket = server.accept();
+                    if (isSyncPaused(this)) {
+                        try { socket.close(); } catch (Exception ignored) {}
+                        continue;
+                    }
                     new Thread(() -> handleIncomingFile(socket)).start();
                 }
             } catch (Exception e) {
@@ -769,6 +906,7 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void handleIncomingFile(Socket socket) {
+        acquireWakeLockBriefly(30000);
         try {
             socket.setSoTimeout(30000);
             InputStream in = socket.getInputStream();
@@ -1026,8 +1164,17 @@ public class ClipSyncService extends AccessibilityService {
                     byte[] beacon = ("CLIP_SYNC:" + deviceId).getBytes(StandardCharsets.UTF_8);
                     InetAddress bcast = InetAddress.getByName("255.255.255.255");
                     while (true) {
-                        socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
-                        Thread.sleep(4000);
+                        if (!isSyncPaused(this)) {
+                            socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
+                        }
+                        if (isSyncPaused(this)) {
+                            Thread.sleep(4000);
+                        } else if (!peers.isEmpty()) {
+                            // Already connected to PC! Slow down beaconing to save battery
+                            Thread.sleep(15000);
+                        } else {
+                            Thread.sleep(4000);
+                        }
                     }
                 } catch (Exception e) {
                     try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
@@ -1042,6 +1189,9 @@ public class ClipSyncService extends AccessibilityService {
                     while (true) {
                         DatagramPacket packet = new DatagramPacket(buf, buf.length);
                         socket.receive(packet);
+                        if (isSyncPaused(this)) {
+                            continue;
+                        }
                         String peerIp = packet.getAddress().getHostAddress();
                         if (peerIp != null) peerIp = peerIp.replaceFirst("^::ffff:", "");
                         if (CryptoUtils.isLocalIp(peerIp)) {
@@ -1074,6 +1224,7 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void connectToPeer(String ip) {
+        if (isSyncPaused(this)) return;
         if (ip == null || ip.trim().isEmpty()) return;
         String cleanIp = ip.replaceFirst("^::ffff:", "");
         if (CryptoUtils.isLocalIp(cleanIp)) return;
@@ -1119,11 +1270,42 @@ public class ClipSyncService extends AccessibilityService {
                 builder = new Notification.Builder(this);
             }
 
+            boolean paused = isSyncPaused(this);
+            boolean connected = isConnectedToPeer();
+            String peerSummary = getConnectedPeerSummary();
+
+            String title;
+            String text;
+            if (paused) {
+                title = "ClipSync Paused";
+                text = "⏸️ Background sync paused • Tap Resume to activate";
+            } else if (connected && peerSummary != null) {
+                title = "ClipSync Active";
+                text = "🟢 Connected to " + peerSummary + " (AES-256)";
+            } else {
+                title = "ClipSync Searching";
+                text = "📡 Searching for Linux PC on Wi-Fi...";
+            }
+
             builder.setSmallIcon(android.R.drawable.stat_notify_sync)
-                   .setContentTitle("ClipSync Active")
-                   .setContentText("🟢 Connected & Encrypted (AES-256)")
+                   .setContentTitle(title)
+                   .setContentText(text)
                    .setOngoing(true)
                    .setContentIntent(pi);
+
+            Intent actionIntent = new Intent(paused ? ACTION_RESUME_SYNC : ACTION_PAUSE_SYNC);
+            actionIntent.setPackage(getPackageName());
+            PendingIntent actionPi = PendingIntent.getBroadcast(this, 102, actionIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0));
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
+                Notification.Action action = new Notification.Action.Builder(
+                    paused ? android.R.drawable.ic_media_play : android.R.drawable.ic_media_pause,
+                    paused ? "Resume Sync" : "Pause Sync",
+                    actionPi
+                ).build();
+                builder.addAction(action);
+            }
 
             Notification notification = builder.build();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -1133,7 +1315,15 @@ public class ClipSyncService extends AccessibilityService {
             } else {
                 startForeground(1001, notification);
             }
+
+            if (nm != null) {
+                nm.notify(1001, notification);
+            }
         } catch (Exception ignored) {}
+    }
+
+    public void updateForegroundNotification() {
+        startForegroundServiceNotification();
     }
 
     private void startHeartbeat() {
@@ -1141,7 +1331,7 @@ public class ClipSyncService extends AccessibilityService {
             while (true) {
                 try {
                     Thread.sleep(15000);
-                    if (!peers.isEmpty()) {
+                    if (!isSyncPaused(this) && !peers.isEmpty()) {
                         JSONObject ping = new JSONObject();
                         ping.put("type", "ping");
                         sendJsonToPeers(ping);
@@ -1155,8 +1345,8 @@ public class ClipSyncService extends AccessibilityService {
         new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(4000);
-                    if (peers.isEmpty()) {
+                    Thread.sleep(8000);
+                    if (!isSyncPaused(this) && peers.isEmpty()) {
                         SharedPreferences prefs = getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
                         String lastIp = prefs.getString("last_peer_ip", null);
                         if (lastIp != null && !lastIp.isEmpty()) {

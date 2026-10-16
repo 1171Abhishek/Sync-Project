@@ -41,6 +41,9 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvBatteryActiveBadge;
     private MaterialButton btnBatteryEnable;
 
+    // Master Sync Switch
+    private com.google.android.material.materialswitch.MaterialSwitch switchMasterSync;
+
     // Real-time peer connection tracking
     private final Handler statusHandler = new Handler(Looper.getMainLooper());
     private final Runnable statusRefresher = new Runnable() {
@@ -85,6 +88,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initViews() {
+        switchMasterSync = findViewById(R.id.switchMasterSync);
+
         cardHeroStatus = findViewById(R.id.cardHeroStatus);
         ivHeroIcon = findViewById(R.id.ivHeroIcon);
         tvHeroTitle = findViewById(R.id.tvHeroTitle);
@@ -101,6 +106,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupClickListeners() {
+        if (switchMasterSync != null) {
+            switchMasterSync.setChecked(!ClipSyncService.isSyncPaused(this));
+            switchMasterSync.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                ClipSyncService.setSyncPaused(MainActivity.this, !isChecked);
+                updateUI();
+            });
+        }
+
         btnClipboardEnable.setOnClickListener(v -> {
             if (!isAccessibilityServiceEnabled()) {
                 Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
@@ -127,7 +140,9 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         if (!isReceiverRegistered) {
             try {
-                IntentFilter filter = new IntentFilter("com.clipsync.PEER_STATE_CHANGED");
+                IntentFilter filter = new IntentFilter();
+                filter.addAction("com.clipsync.PEER_STATE_CHANGED");
+                filter.addAction("com.clipsync.SYNC_STATE_CHANGED");
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     registerReceiver(peerReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
                 } else {
@@ -152,6 +167,18 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateUI() {
+        boolean isPaused = ClipSyncService.isSyncPaused(this);
+
+        // Keep switch in sync with background state without triggering recursive callbacks
+        if (switchMasterSync != null && switchMasterSync.isChecked() == isPaused) {
+            switchMasterSync.setOnCheckedChangeListener(null);
+            switchMasterSync.setChecked(!isPaused);
+            switchMasterSync.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                ClipSyncService.setSyncPaused(MainActivity.this, !isChecked);
+                updateUI();
+            });
+        }
+
         boolean a11yActive = isAccessibilityServiceEnabled();
         boolean notifActive = isNotificationServiceEnabled();
         boolean batteryUnrestricted = !isBatteryOptimized();
@@ -184,42 +211,54 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // 4. Hero Status Card (Real-Time Device Connection State)
-        int missingCount = (a11yActive ? 0 : 1) + (notifActive ? 0 : 1) + (batteryUnrestricted ? 0 : 1);
-        if (missingCount > 0) {
-            // State 1: Permissions need attention
-            cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_warning_bg));
-            cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_warning_border));
-            ivHeroIcon.setImageResource(R.drawable.ic_bolt);
-            ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_warning_text));
-            tvHeroTitle.setText("Setup Incomplete");
-            tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_warning_text));
-            tvHeroSubtitle.setText(missingCount + (missingCount == 1 ? " permission needed" : " permissions needed") + " for background sync");
-            tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_warning_text));
+        if (isPaused) {
+            // State 0: ⏸️ Paused by user!
+            cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_paused_bg));
+            cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_paused_border));
+            ivHeroIcon.setImageResource(R.drawable.ic_pause);
+            ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_paused_text));
+            tvHeroTitle.setText("⏸️ Sync Paused");
+            tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_paused_text));
+            tvHeroSubtitle.setText("Background sync paused • Conserving battery");
+            tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_paused_text));
         } else {
-            // Permissions are all granted! Check real-time active connection:
-            boolean connected = ClipSyncService.isConnectedToPeer();
-            String peerIp = ClipSyncService.getConnectedPeerSummary();
-
-            if (connected && peerIp != null && !peerIp.isEmpty()) {
-                // State 2: 🟢 Connected to PC in real time!
-                cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_success_bg));
-                cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_success_border));
-                ivHeroIcon.setImageResource(R.drawable.ic_check);
-                ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_success_text));
-                tvHeroTitle.setText("🟢 Connected to PC");
-                tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
-                tvHeroSubtitle.setText("Live sync active • " + peerIp);
-                tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
-            } else {
-                // State 3: 📡 Searching for PC on Wi-Fi
-                cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_searching_bg));
-                cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_searching_border));
+            int missingCount = (a11yActive ? 0 : 1) + (notifActive ? 0 : 1) + (batteryUnrestricted ? 0 : 1);
+            if (missingCount > 0) {
+                // State 1: Permissions need attention
+                cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_warning_bg));
+                cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_warning_border));
                 ivHeroIcon.setImageResource(R.drawable.ic_bolt);
-                ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_searching_text));
-                tvHeroTitle.setText("📡 Searching for PC...");
-                tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_searching_text));
-                tvHeroSubtitle.setText("Waiting for Linux daemon on local Wi-Fi");
-                tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_searching_text));
+                ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_warning_text));
+                tvHeroTitle.setText("Setup Incomplete");
+                tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_warning_text));
+                tvHeroSubtitle.setText(missingCount + (missingCount == 1 ? " permission needed" : " permissions needed") + " for background sync");
+                tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_warning_text));
+            } else {
+                // Permissions are all granted! Check real-time active connection:
+                boolean connected = ClipSyncService.isConnectedToPeer();
+                String peerIp = ClipSyncService.getConnectedPeerSummary();
+
+                if (connected && peerIp != null && !peerIp.isEmpty()) {
+                    // State 2: 🟢 Connected to PC in real time!
+                    cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_success_bg));
+                    cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_success_border));
+                    ivHeroIcon.setImageResource(R.drawable.ic_check);
+                    ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_success_text));
+                    tvHeroTitle.setText("🟢 Connected to PC");
+                    tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
+                    tvHeroSubtitle.setText("Live sync active • " + peerIp);
+                    tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
+                } else {
+                    // State 3: 📡 Searching for PC on Wi-Fi
+                    cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_searching_bg));
+                    cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_searching_border));
+                    ivHeroIcon.setImageResource(R.drawable.ic_bolt);
+                    ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_searching_text));
+                    tvHeroTitle.setText("📡 Searching for PC...");
+                    tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_searching_text));
+                    tvHeroSubtitle.setText("Waiting for Linux daemon on local Wi-Fi");
+                    tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_searching_text));
+                }
             }
         }
     }

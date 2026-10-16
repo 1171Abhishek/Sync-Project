@@ -60,6 +60,13 @@
                         android:textSize="14sp"
                         android:textColor="@color/text_secondary" />
                 </LinearLayout>
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchMasterSync"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:contentDescription="Master Sync Switch" />
             </LinearLayout>
 
             <!-- Hero Status Card -->

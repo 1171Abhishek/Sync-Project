@@ -21,6 +21,11 @@
     <color name="status_searching_text">#93C5FD</color>
     <color name="status_searching_border">#1E3A8A</color>
 
+    <color name="status_paused">#94A3B8</color>
+    <color name="status_paused_bg">#1E293B</color>
+    <color name="status_paused_text">#94A3B8</color>
+    <color name="status_paused_border">#334155</color>
+
     <!-- Surfaces & Backgrounds (Dark) -->
     <color name="bg_screen">#0B0F19</color>
     <color name="card_surface">#131B2E</color>
