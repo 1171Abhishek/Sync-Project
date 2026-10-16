@@ -204,7 +204,8 @@ func ensureUserService(execPath string, verbose bool) error {
 	desiredContent := fmt.Sprintf(`[Unit]
 Description=ClipSync - Cross-device Linux/Android Continuity Daemon
 Documentation=https://github.com/1171Abhishek/Sync-Project
-After=network.target
+PartOf=graphical-session.target
+After=graphical-session.target network.target
 
 [Service]
 Type=simple
@@ -213,7 +214,7 @@ Restart=on-failure
 RestartSec=3
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 `, execPath)
 
 	if existing, err := os.ReadFile(serviceFile); err == nil {

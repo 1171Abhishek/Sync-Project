@@ -33,9 +33,26 @@ func NewSyncNode() *SyncNode {
 		nativeClip: hasNative,
 		crypto:     crypto,
 	}
+	_ = os.Remove(PeerFile)
+	_ = os.WriteFile(ActivePeersFile, []byte("[]"), 0644)
+
 	go node.startHeartbeat()
 	go node.startReconnectWatchdog()
 	return node
+}
+
+func (n *SyncNode) syncPeersFileLocked() {
+	ips := make([]string, 0, len(n.peers))
+	for ip := range n.peers {
+		ips = append(ips, ip)
+	}
+	data, _ := json.Marshal(ips)
+	_ = os.WriteFile(ActivePeersFile, data, 0644)
+	if len(ips) > 0 {
+		_ = os.WriteFile(PeerFile, []byte(ips[0]), 0644)
+	} else {
+		_ = os.Remove(PeerFile)
+	}
 }
 
 func (n *SyncNode) BroadcastMessage(msg SyncMessage) {
@@ -102,10 +119,8 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 		return
 	}
 	n.peers[hostIP] = conn
+	n.syncPeersFileLocked()
 	n.peersLock.Unlock()
-
-	// Cache active peer IP for CLI tools
-	_ = os.WriteFile(PeerFile, []byte(hostIP), 0644)
 
 	fmt.Printf("⚡ Connected with peer: %s\n", hostIP)
 
@@ -114,6 +129,7 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 		if currConn, exists := n.peers[hostIP]; exists && currConn == conn {
 			delete(n.peers, hostIP)
 		}
+		n.syncPeersFileLocked()
 		n.peersLock.Unlock()
 		conn.Close()
 		fmt.Printf("❌ Disconnected from: %s\n", hostIP)

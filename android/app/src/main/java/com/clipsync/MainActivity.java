@@ -236,6 +236,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 // Permissions are all granted! Check real-time active connection:
                 boolean connected = ClipSyncService.isConnectedToPeer();
+                int peerCount = ClipSyncService.getConnectedPeerCount();
                 String peerIp = ClipSyncService.getConnectedPeerSummary();
 
                 if (connected && peerIp != null && !peerIp.isEmpty()) {
@@ -244,9 +245,13 @@ public class MainActivity extends AppCompatActivity {
                     cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_success_border));
                     ivHeroIcon.setImageResource(R.drawable.ic_check);
                     ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_success_text));
-                    tvHeroTitle.setText("🟢 Connected to PC");
-                    tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
-                    tvHeroSubtitle.setText("Live sync active • " + peerIp);
+                    if (peerCount > 1) {
+                        tvHeroTitle.setText("🟢 Connected to " + peerCount + " Devices");
+                        tvHeroSubtitle.setText("Live mesh active • " + peerIp);
+                    } else {
+                        tvHeroTitle.setText("🟢 Connected to PC");
+                        tvHeroSubtitle.setText("Live sync active • " + peerIp);
+                    }
                     tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
                 } else {
                     // State 3: 📡 Searching for PC on Wi-Fi

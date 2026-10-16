@@ -55,6 +55,11 @@ func main() {
 			return
 		}
 
+		if arg == "devices" || arg == "peers" {
+			showConnectedDevices()
+			return
+		}
+
 		if arg == "test-battery" {
 			runBatteryTest()
 			return
@@ -142,10 +147,57 @@ func main() {
 	node.startClipboardWatcher()
 }
 
+func getActivePeersList() []string {
+	var activePeers []string
+	if data, err := os.ReadFile(ActivePeersFile); err == nil {
+		_ = json.Unmarshal(data, &activePeers)
+	}
+	if len(activePeers) == 0 {
+		if data, err := os.ReadFile(PeerFile); err == nil {
+			ip := strings.TrimSpace(string(data))
+			if ip != "" {
+				activePeers = append(activePeers, ip)
+			}
+		}
+	}
+	return activePeers
+}
+
+func showConnectedDevices() {
+	activePeers := getActivePeersList()
+	if len(activePeers) == 0 {
+		fmt.Println("📡 Connected Devices: 0")
+		fmt.Println("   No active peers connected. Ensure devices are on the same Wi-Fi.")
+		return
+	}
+
+	fmt.Printf("📱 Connected Devices (%d):\n", len(activePeers))
+	for i, peer := range activePeers {
+		fmt.Printf("   %d. 🟢 %s (Live)\n", i+1, peer)
+	}
+}
+
 func showPhoneStatus() {
-	peerIP := ""
-	if data, err := os.ReadFile(PeerFile); err == nil {
-		peerIP = strings.TrimSpace(string(data))
+	activePeers := getActivePeersList()
+	peerCount := len(activePeers)
+
+	if peerCount == 0 {
+		fmt.Println("📡 Status: ⏸️ Disconnected (0 devices connected)")
+		fmt.Println("   Waiting for Phone on local Wi-Fi...")
+		if data, err := os.ReadFile(BatteryFile); err == nil {
+			var info BatteryInfo
+			if err := json.Unmarshal(data, &info); err == nil {
+				timeAgo := time.Since(info.UpdatedAt).Round(time.Second)
+				fmt.Printf("   🕒 Last known phone battery: %d%% (%s ago)\n", info.Level, timeAgo)
+			}
+		}
+		return
+	}
+
+	if peerCount == 1 {
+		fmt.Printf("🟢 Connected Device: %s\n", activePeers[0])
+	} else {
+		fmt.Printf("🟢 Connected Devices (%d): %s\n", peerCount, strings.Join(activePeers, ", "))
 	}
 
 	if data, err := os.ReadFile(BatteryFile); err == nil {
@@ -161,19 +213,12 @@ func showPhoneStatus() {
 			}
 			timeAgo := time.Since(info.UpdatedAt).Round(time.Second)
 			fmt.Printf("%s Phone Battery: %d%% [%s]\n", icon, info.Level, chargeStatus)
-			if peerIP != "" {
-				fmt.Printf("📱 Connected Peer IP: %s\n", peerIP)
-			}
 			fmt.Printf("🕒 Last Updated: %s ago (%s)\n", timeAgo, info.UpdatedAt.Format("15:04:05"))
 			return
 		}
 	}
 
-	if peerIP != "" {
-		fmt.Printf("📱 Phone connected (%s), waiting for initial battery update...\n", peerIP)
-	} else {
-		fmt.Println("📱 No phone connected. Ensure phone is on the same Wi-Fi and ClipSync is running.")
-	}
+	fmt.Println("📱 Device connected, waiting for battery update...")
 }
 
 func runBatteryTest() {

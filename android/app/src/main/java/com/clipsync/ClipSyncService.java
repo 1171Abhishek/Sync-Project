@@ -165,11 +165,18 @@ public class ClipSyncService extends AccessibilityService {
         return !peers.isEmpty();
     }
 
+    public static int getConnectedPeerCount() {
+        return peers.size();
+    }
+
     public static String getConnectedPeerSummary() {
         if (peers.isEmpty()) {
             return null;
         }
-        return peers.keySet().iterator().next();
+        if (peers.size() == 1) {
+            return peers.keySet().iterator().next();
+        }
+        return peers.size() + " Devices (" + android.text.TextUtils.join(", ", peers.keySet()) + ")";
     }
 
     public static void notifyPeerStateChanged() {

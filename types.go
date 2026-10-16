@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	UDPPort     = 9876
-	TCPPort     = 9877
-	FilePort    = 9878
-	PeerFile    = "/tmp/clipsync_peer"
-	BatteryFile = "/tmp/clipsync_battery"
+	UDPPort         = 9876
+	TCPPort         = 9877
+	FilePort        = 9878
+	PeerFile        = "/tmp/clipsync_peer"
+	ActivePeersFile = "/tmp/clipsync_active_peers.json"
+	BatteryFile     = "/tmp/clipsync_battery"
 )
 
 type SyncMessage struct {
