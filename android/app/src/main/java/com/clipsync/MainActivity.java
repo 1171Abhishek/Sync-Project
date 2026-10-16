@@ -26,17 +26,14 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvHeroSubtitle;
 
     // Clipboard Sync
-    private MaterialCardView cardClipboard;
     private TextView tvClipboardActiveBadge;
     private MaterialButton btnClipboardEnable;
 
     // Calls & Notifications
-    private MaterialCardView cardNotifications;
     private TextView tvNotifActiveBadge;
     private MaterialButton btnNotifEnable;
 
     // Battery / Background Persistence
-    private MaterialCardView cardBattery;
     private TextView tvBatteryActiveBadge;
     private MaterialButton btnBatteryEnable;
 
@@ -71,45 +68,36 @@ public class MainActivity extends AppCompatActivity {
         tvHeroTitle = findViewById(R.id.tvHeroTitle);
         tvHeroSubtitle = findViewById(R.id.tvHeroSubtitle);
 
-        cardClipboard = findViewById(R.id.cardClipboard);
         tvClipboardActiveBadge = findViewById(R.id.tvClipboardActiveBadge);
         btnClipboardEnable = findViewById(R.id.btnClipboardEnable);
 
-        cardNotifications = findViewById(R.id.cardNotifications);
         tvNotifActiveBadge = findViewById(R.id.tvNotifActiveBadge);
         btnNotifEnable = findViewById(R.id.btnNotifEnable);
 
-        cardBattery = findViewById(R.id.cardBattery);
         tvBatteryActiveBadge = findViewById(R.id.tvBatteryActiveBadge);
         btnBatteryEnable = findViewById(R.id.btnBatteryEnable);
     }
 
     private void setupClickListeners() {
-        View.OnClickListener a11yClick = v -> {
+        btnClipboardEnable.setOnClickListener(v -> {
             if (!isAccessibilityServiceEnabled()) {
                 Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
                 startActivity(intent);
             }
-        };
-        cardClipboard.setOnClickListener(a11yClick);
-        btnClipboardEnable.setOnClickListener(a11yClick);
+        });
 
-        View.OnClickListener notifClick = v -> {
+        btnNotifEnable.setOnClickListener(v -> {
             if (!isNotificationServiceEnabled()) {
                 Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
                 startActivity(intent);
             }
-        };
-        cardNotifications.setOnClickListener(notifClick);
-        btnNotifEnable.setOnClickListener(notifClick);
+        });
 
-        View.OnClickListener batteryClick = v -> {
+        btnBatteryEnable.setOnClickListener(v -> {
             if (isBatteryOptimized()) {
                 requestIgnoreBatteryOptimization();
             }
-        };
-        cardBattery.setOnClickListener(batteryClick);
-        btnBatteryEnable.setOnClickListener(batteryClick);
+        });
     }
 
     @Override
@@ -127,33 +115,27 @@ public class MainActivity extends AppCompatActivity {
         if (a11yActive) {
             tvClipboardActiveBadge.setVisibility(View.VISIBLE);
             btnClipboardEnable.setVisibility(View.GONE);
-            cardClipboard.setClickable(false);
         } else {
             tvClipboardActiveBadge.setVisibility(View.GONE);
             btnClipboardEnable.setVisibility(View.VISIBLE);
-            cardClipboard.setClickable(true);
         }
 
         // 2. Notification & Calls Card
         if (notifActive) {
             tvNotifActiveBadge.setVisibility(View.VISIBLE);
             btnNotifEnable.setVisibility(View.GONE);
-            cardNotifications.setClickable(false);
         } else {
             tvNotifActiveBadge.setVisibility(View.GONE);
             btnNotifEnable.setVisibility(View.VISIBLE);
-            cardNotifications.setClickable(true);
         }
 
         // 3. Battery Optimization Card
         if (batteryUnrestricted) {
             tvBatteryActiveBadge.setVisibility(View.VISIBLE);
             btnBatteryEnable.setVisibility(View.GONE);
-            cardBattery.setClickable(false);
         } else {
             tvBatteryActiveBadge.setVisibility(View.GONE);
             btnBatteryEnable.setVisibility(View.VISIBLE);
-            cardBattery.setClickable(true);
         }
 
         // 4. Hero Status Card
