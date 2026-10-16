@@ -1,5 +1,5 @@
 Name:           clip-sync
-Version:        1.0.0
+Version:        0.0.10
 Release:        1%{?dist}
 Summary:        Seamless Linux and Android continuity daemon
 
@@ -47,5 +47,5 @@ echo "=========================================================="
 echo ""
 
 %changelog
-* Wed Oct 14 2026 Abhishek Kumar <abhishek@example.com> - 1.0.0-1
-- Initial RPM release
+* Fri Oct 16 2026 Abhishek Kumar <abhishek@example.com> - 0.0.10-1
+- Release version 0.0.10 with battery and call alerts

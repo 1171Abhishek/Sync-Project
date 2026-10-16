@@ -4,7 +4,7 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
-VERSION="1.0.0"
+VERSION="0.0.10"
 PACKAGE_NAME="clip-sync"
 
 echo "🔨 [1/3] Compiling clip-sync binary for Arch Linux..."
@@ -44,7 +44,7 @@ if command -v makepkg &>/dev/null; then
     cat <<'EOF' > "$ARCH_DIR"/PKGBUILD
 # Maintainer: Abhishek Kumar <abhishek@example.com>
 pkgname=clip-sync
-pkgver=1.0.0
+pkgver=0.0.10
 pkgrel=1
 pkgdesc="Seamless Linux and Android continuity daemon"
 arch=('x86_64')

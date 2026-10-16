@@ -65,7 +65,7 @@
 #### Option A: Install via RPM (Fedora, RHEL, openSUSE)
 If you built or downloaded the RPM package:
 ```bash
-sudo dnf install dist/clip-sync-1.0.0-1.fc44.x86_64.rpm
+sudo dnf install dist/clip-sync-0.0.10-1.fc44.x86_64.rpm
 ```
 Enable and start the background user service:
 ```bash
@@ -75,7 +75,7 @@ systemctl --user enable --now clip-sync
 #### Option B: Install via DEB (Ubuntu, Debian, Linux Mint, Pop!_OS)
 If you built or downloaded the DEB package:
 ```bash
-sudo apt install ./dist/clip-sync_1.0.0-1_amd64.deb
+sudo apt install ./dist/clip-sync_0.0.10-1_amd64.deb
 ```
 Enable and start the background user service:
 ```bash
@@ -85,7 +85,7 @@ systemctl --user enable --now clip-sync
 #### Option C: Install on Arch Linux (Arch, Manjaro, EndeavourOS)
 If you built or downloaded the Arch package:
 ```bash
-sudo pacman -U ./dist/clip-sync-1.0.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./dist/clip-sync-0.0.10-1-x86_64.pkg.tar.zst
 ```
 Enable and start the background user service:
 ```bash

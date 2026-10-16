@@ -67,10 +67,16 @@ func main() {
 			return
 		}
 
+		if arg == "version" || arg == "-v" || arg == "--version" {
+			fmt.Println("ClipSync v0.0.10")
+			return
+		}
+
 		if arg == "-h" || arg == "--help" {
-			fmt.Println("ClipSync - Seamless Linux <-> Android Continuity")
+			fmt.Println("ClipSync v0.0.10 - Seamless Linux <-> Android Continuity")
 			fmt.Println("Usage:")
 			fmt.Println("  clip-sync                 Start background daemon & auto-register shortcuts")
+			fmt.Println("  clip-sync version         Print ClipSync version (v0.0.10)")
 			fmt.Println("  clip-sync battery         Check connected phone battery percentage & status")
 			fmt.Println("  clip-sync test-battery    Simulate phone low battery & full charge alerts")
 			fmt.Println("  clip-sync test-call [name] Simulate incoming call, auto-dismiss, and missed call")

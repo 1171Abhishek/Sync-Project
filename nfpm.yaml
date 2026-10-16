@@ -1,7 +1,7 @@
 name: "clip-sync"
 arch: "x86_64"
 platform: "linux"
-version: "1.0.0"
+version: "0.0.10"
 release: "1"
 section: "net"
 priority: "optional"

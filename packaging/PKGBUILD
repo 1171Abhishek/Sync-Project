@@ -1,6 +1,6 @@
 # Maintainer: Abhishek Kumar <abhishek@example.com>
 pkgname=clip-sync
-pkgver=1.0.0
+pkgver=0.0.10
 pkgrel=1
 pkgdesc="Seamless Linux and Android continuity daemon"
 arch=('x86_64')

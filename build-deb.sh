@@ -4,7 +4,7 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
-VERSION="1.0.0"
+VERSION="0.0.10"
 PACKAGE_NAME="clip-sync"
 ARCH="amd64"
 
