@@ -1,5 +1,8 @@
 # Compiled Binaries & Test Artifacts
-clip-sync*
+/clip-sync
+/clip-sync-android
+!clip-sync.service
+!clip-sync-logo.svg
 *.exe
 *.exe~
 *.dll

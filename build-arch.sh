@@ -11,6 +11,25 @@ echo "🔨 [1/3] Compiling clip-sync binary for Arch Linux..."
 go build -ldflags="-s -w" -o clip-sync .
 echo "✓ Compiled clip-sync binary successfully."
 
+# Ensure clip-sync.service exists
+if [ ! -f "clip-sync.service" ]; then
+    cat <<'EOF' > clip-sync.service
+[Unit]
+Description=ClipSync - Cross-device Linux/Android Continuity Daemon
+Documentation=https://github.com/1171Abhishek/Sync-Project
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/clip-sync
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+fi
+
 mkdir -p dist
 
 if command -v makepkg &>/dev/null; then
@@ -35,8 +54,8 @@ depends=('wl-clipboard' 'libnotify' 'xdg-utils')
 optdepends=('xclip: for X11 clipboard fallback')
 
 package() {
-  install -Dm755 "${srcdir}/../clip-sync" "${pkgdir}/usr/bin/clip-sync"
-  install -Dm644 "${srcdir}/../clip-sync.service" "${pkgdir}/usr/lib/systemd/user/clip-sync.service"
+  install -Dm755 "${startdir}/clip-sync" "${pkgdir}/usr/bin/clip-sync"
+  install -Dm644 "${startdir}/clip-sync.service" "${pkgdir}/usr/lib/systemd/user/clip-sync.service"
 }
 EOF
 
