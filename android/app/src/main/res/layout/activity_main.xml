@@ -201,7 +201,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnClipboardEnable"
-                    style="@style/Widget.Material3.Button.Tonal"
+                    style="@style/Widget.Material3.Button.TonalButton"
                     android:layout_width="wrap_content"
                     android:layout_height="38dp"
                     android:text="Enable"
@@ -286,7 +286,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnNotifEnable"
-                    style="@style/Widget.Material3.Button.Tonal"
+                    style="@style/Widget.Material3.Button.TonalButton"
                     android:layout_width="wrap_content"
                     android:layout_height="38dp"
                     android:text="Enable"
@@ -371,7 +371,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnBatteryEnable"
-                    style="@style/Widget.Material3.Button.Tonal"
+                    style="@style/Widget.Material3.Button.TonalButton"
                     android:layout_width="wrap_content"
                     android:layout_height="38dp"
                     android:text="Allow"
