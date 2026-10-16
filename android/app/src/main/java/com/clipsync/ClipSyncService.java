@@ -655,7 +655,6 @@ public class ClipSyncService extends AccessibilityService {
                     JSONObject pong = new JSONObject();
                     pong.put("type", "pong");
                     sendJsonToPeers(pong);
-                    sendCurrentBatteryStatus();
                     continue;
                 }
                 if ("pong".equals(type)) {

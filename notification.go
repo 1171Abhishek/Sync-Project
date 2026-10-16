@@ -185,6 +185,9 @@ type BatteryInfo struct {
 
 func (n *SyncNode) handleBattery(msg SyncMessage) {
 	n.batteryMu.Lock()
+	prevLevel := n.lastBatteryLevel
+	prevCharge := n.lastBatteryCharge
+	stateChanged := (msg.BatteryLevel != prevLevel || msg.IsCharging != prevCharge)
 	n.lastBatteryLevel = msg.BatteryLevel
 	n.lastBatteryCharge = msg.IsCharging
 	n.lastBatteryStatus = msg.BatteryStatus
@@ -238,8 +241,10 @@ func (n *SyncNode) handleBattery(msg SyncMessage) {
 		sendDesktopNotification(title, body, "battery-full", "normal")
 
 	default:
-		// Regular battery state update (cached for CLI inspection, 0 desktop popup spam)
-		fmt.Printf("🔋 [%s] Phone Battery: %d%% [%s]\n", timeStr, msg.BatteryLevel, chargeStr)
+		// Regular battery state update: only log when percentage or charging state actually changes
+		if stateChanged {
+			fmt.Printf("🔋 [%s] Phone Battery: %d%% [%s]\n", timeStr, msg.BatteryLevel, chargeStr)
+		}
 	}
 }
 
