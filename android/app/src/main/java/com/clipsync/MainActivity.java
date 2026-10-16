@@ -24,9 +24,18 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 101);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            java.util.List<String> perms = new java.util.ArrayList<>();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    perms.add(android.Manifest.permission.POST_NOTIFICATIONS);
+                }
+            }
+            if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                perms.add(android.Manifest.permission.READ_PHONE_STATE);
+            }
+            if (!perms.isEmpty()) {
+                requestPermissions(perms.toArray(new String[0]), 101);
             }
         }
 
@@ -57,7 +66,7 @@ public class MainActivity extends Activity {
         layout.addView(headerLayout);
 
         TextView desc = new TextView(this);
-        desc.setText("\nSeamless local continuity with your Linux PC.\nTo enable features, please grant the permissions below:\n");
+        desc.setText("\nSeamless local continuity with your Linux PC.\nIncludes Clipboard Sync, Incoming Call Alerts, Phone Battery Alerts, and OTP Auto-Extraction.\nTo enable features, please grant the permissions below:\n");
         desc.setTextSize(15);
         layout.addView(desc);
 
@@ -166,10 +175,10 @@ public class MainActivity extends Activity {
     private void updateNotificationButton() {
         if (notifBtn == null) return;
         if (isNotificationServiceEnabled()) {
-            notifBtn.setText("2. Turn ON Notification & OTP Sync\n✓ Already Allowed (Active)");
+            notifBtn.setText("2. Turn ON Notification, Call & Battery Alerts\n✓ Already Allowed (Active)");
             notifBtn.setEnabled(false);
         } else {
-            notifBtn.setText("2. Turn ON Notification & OTP Sync\n👉 Tap to Allow (Device & App Notifications)");
+            notifBtn.setText("2. Turn ON Notification, Call & Battery Alerts\n👉 Tap to Allow (Device & App Notifications)");
             notifBtn.setEnabled(true);
         }
     }

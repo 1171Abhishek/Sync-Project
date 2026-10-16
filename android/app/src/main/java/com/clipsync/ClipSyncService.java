@@ -27,6 +27,9 @@ import android.content.pm.ServiceInfo;
 import org.json.JSONObject;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
+import android.os.BatteryManager;
 
 import java.io.*;
 import java.net.*;
@@ -56,6 +59,12 @@ public class ClipSyncService extends AccessibilityService {
     private WifiManager.WifiLock wifiLock;
     private String lastSelectedText = null;
     private WifiManager.MulticastLock multicastLock;
+    private BroadcastReceiver batteryReceiver;
+    private int lastAlertedThreshold = 100;
+    private boolean lastAlertedFull = false;
+    private int lastReportedBatteryLevel = -1;
+    private boolean lastReportedCharging = false;
+    private long lastBatteryBroadcastTime = 0;
 
     public static Set<String> getActivePeers() {
         return peers.keySet();
@@ -178,6 +187,8 @@ public class ClipSyncService extends AccessibilityService {
         new Thread(this::startUdpDiscovery).start();
         startHeartbeat();
         startReconnectWatchdog();
+        setupBatteryMonitoring();
+        setupTelephonyListener();
 
         mainHandler.post(() -> {
             if (clipboard != null) {
@@ -200,6 +211,9 @@ public class ClipSyncService extends AccessibilityService {
             }
             if (multicastLock != null && multicastLock.isHeld()) {
                 multicastLock.release();
+            }
+            if (batteryReceiver != null) {
+                unregisterReceiver(batteryReceiver);
             }
         } catch (Exception ignored) {}
         super.onDestroy();
@@ -613,6 +627,9 @@ public class ClipSyncService extends AccessibilityService {
             peers.put(hostIp, socket);
             isPrimary = true;
         }
+        if (isPrimary) {
+            sendCurrentBatteryStatus();
+        }
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
@@ -638,6 +655,7 @@ public class ClipSyncService extends AccessibilityService {
                     JSONObject pong = new JSONObject();
                     pong.put("type", "pong");
                     sendJsonToPeers(pong);
+                    sendCurrentBatteryStatus();
                     continue;
                 }
                 if ("pong".equals(type)) {
@@ -1127,4 +1145,161 @@ public class ClipSyncService extends AccessibilityService {
         }).start();
     }
 
+    private void setupBatteryMonitoring() {
+        try {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_BATTERY_CHANGED);
+            filter.addAction(Intent.ACTION_POWER_CONNECTED);
+            filter.addAction(Intent.ACTION_POWER_DISCONNECTED);
+
+            batteryReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    handleBatteryIntent(context, intent);
+                }
+            };
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(batteryReceiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(batteryReceiver, filter);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void handleBatteryIntent(Context context, Intent intent) {
+        if (intent == null) return;
+        try {
+            String action = intent.getAction();
+            int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            int percent = (level >= 0 && scale > 0) ? (int) ((level / (float) scale) * 100) : -1;
+            int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+            boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                                  status == BatteryManager.BATTERY_STATUS_FULL);
+            if (Intent.ACTION_POWER_CONNECTED.equals(action)) {
+                isCharging = true;
+            } else if (Intent.ACTION_POWER_DISCONNECTED.equals(action)) {
+                isCharging = false;
+            }
+            if (percent < 0) return;
+
+            long now = System.currentTimeMillis();
+            boolean shouldAlert = false;
+            String batteryStatus = "status";
+            String title = "";
+            String content = "";
+
+            if (!isCharging) {
+                lastAlertedFull = false;
+                if (percent <= 5 && lastAlertedThreshold > 5) {
+                    lastAlertedThreshold = 5;
+                    shouldAlert = true;
+                    batteryStatus = "critical";
+                    title = "🪫 Phone Battery Critical (" + percent + "%)";
+                    content = "Phone battery is at " + percent + "%! Connect charger immediately.";
+                } else if (percent <= 10 && lastAlertedThreshold > 10) {
+                    lastAlertedThreshold = 10;
+                    shouldAlert = true;
+                    batteryStatus = "critical";
+                    title = "🪫 Phone Battery Very Low (" + percent + "%)";
+                    content = "Phone battery is at " + percent + "%. Please connect your charger.";
+                } else if (percent <= 20 && lastAlertedThreshold > 20) {
+                    lastAlertedThreshold = 20;
+                    shouldAlert = true;
+                    batteryStatus = "low";
+                    title = "🪫 Phone Battery Low (" + percent + "%)";
+                    content = "Phone battery is at " + percent + "%. Please connect your charger.";
+                }
+            } else {
+                lastAlertedThreshold = 100;
+                if ((percent >= 100 || status == BatteryManager.BATTERY_STATUS_FULL) && !lastAlertedFull) {
+                    lastAlertedFull = true;
+                    shouldAlert = true;
+                    batteryStatus = "full";
+                    title = "🔋 Phone Fully Charged (100%)";
+                    content = "Phone is fully charged. You can unplug the charger now.";
+                }
+            }
+
+            boolean chargingChanged = (isCharging != lastReportedCharging);
+            boolean levelSignificantChange = Math.abs(percent - lastReportedBatteryLevel) >= 5 && (now - lastBatteryBroadcastTime > 60000);
+
+            if (shouldAlert || chargingChanged || levelSignificantChange) {
+                lastReportedBatteryLevel = percent;
+                lastReportedCharging = isCharging;
+                lastBatteryBroadcastTime = now;
+
+                JSONObject obj = new JSONObject();
+                obj.put("type", "battery");
+                obj.put("battery_level", percent);
+                obj.put("is_charging", isCharging);
+                obj.put("battery_status", batteryStatus);
+                if (!title.isEmpty()) obj.put("title", title);
+                if (!content.isEmpty()) obj.put("content", content);
+                obj.put("timestamp", now);
+
+                broadcastJson(context != null ? context : this, obj);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    public void sendCurrentBatteryStatus() {
+        try {
+            Intent batteryIntent = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (batteryIntent != null) {
+                int level = batteryIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = batteryIntent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                int percent = (level >= 0 && scale > 0) ? (int) ((level / (float) scale) * 100) : -1;
+                int status = batteryIntent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                                      status == BatteryManager.BATTERY_STATUS_FULL);
+                if (percent >= 0) {
+                    JSONObject obj = new JSONObject();
+                    obj.put("type", "battery");
+                    obj.put("battery_level", percent);
+                    obj.put("is_charging", isCharging);
+                    obj.put("battery_status", "status");
+                    obj.put("timestamp", System.currentTimeMillis());
+                    sendJsonToPeers(obj);
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void setupTelephonyListener() {
+        try {
+            android.telephony.TelephonyManager tm = (android.telephony.TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
+            if (tm == null) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    tm.registerTelephonyCallback(getMainExecutor(), new Api31CallCallback(this));
+                }
+            } else {
+                tm.listen(new android.telephony.PhoneStateListener() {
+                    @Override
+                    public void onCallStateChanged(int state, String incomingNumber) {
+                        if (state == android.telephony.TelephonyManager.CALL_STATE_IDLE) {
+                            ClipSyncNotificationService.clearAllActiveCalls(ClipSyncService.this);
+                        }
+                    }
+                }, android.telephony.PhoneStateListener.LISTEN_CALL_STATE);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    @androidx.annotation.RequiresApi(api = Build.VERSION_CODES.S)
+    private static class Api31CallCallback extends android.telephony.TelephonyCallback implements android.telephony.TelephonyCallback.CallStateListener {
+        private final Context context;
+        Api31CallCallback(Context ctx) {
+            this.context = ctx;
+        }
+        @Override
+        public void onCallStateChanged(int state) {
+            if (state == android.telephony.TelephonyManager.CALL_STATE_IDLE) {
+                ClipSyncNotificationService.clearAllActiveCalls(context);
+            }
+        }
+    }
+
 }
+

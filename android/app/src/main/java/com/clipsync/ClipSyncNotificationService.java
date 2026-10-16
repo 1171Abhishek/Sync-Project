@@ -22,6 +22,11 @@ public class ClipSyncNotificationService extends NotificationListenerService {
     private static volatile String lastNotifHash = "";
     private static volatile long lastNotifTime = 0;
 
+    // Track active ringing calls to clear desktop alert when call ends or answered
+    private static final java.util.Map<String, String> activeCallKeys = new java.util.concurrent.ConcurrentHashMap<>();
+    private static volatile String lastAlertedCallKey = "";
+    private static volatile long lastAlertedCallTime = 0;
+
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         if (sbn == null) return;
@@ -29,16 +34,29 @@ public class ClipSyncNotificationService extends NotificationListenerService {
         Notification notification = sbn.getNotification();
         if (notification == null) return;
 
-        // 1. Ignore ongoing sticky notifications (e.g. music playback, background downloads, WhatsApp voice calls)
-        if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) {
-            return;
-        }
-
         String packageName = sbn.getPackageName();
         if (packageName == null) return;
 
-        // 2. Ignore self & internal system noise
-        if ("com.clipsync".equals(packageName) || "android".equals(packageName) || "com.android.systemui".equals(packageName)) {
+        // Ignore self
+        if ("com.clipsync".equals(packageName)) {
+            return;
+        }
+
+        boolean isCall = isCallNotification(sbn, notification);
+
+        // 1. Ignore ongoing sticky notifications (e.g. music playback, background downloads) UNLESS it is a call!
+        if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0 && !isCall) {
+            return;
+        }
+
+        // 2. Ignore internal system noise unless it's a telecom call
+        if (!isCall && ("android".equals(packageName) || "com.android.systemui".equals(packageName))) {
+            return;
+        }
+
+        // 3. Handle incoming & missed calls directly
+        if (isCall) {
+            handleCallNotification(sbn, notification, packageName);
             return;
         }
 
@@ -172,7 +190,209 @@ public class ClipSyncNotificationService extends NotificationListenerService {
     }
 
     @Override
-    public void onNotificationRemoved(StatusBarNotification sbn) {}
+    public void onNotificationRemoved(StatusBarNotification sbn) {
+        if (sbn == null) return;
+        String notifKey = sbn.getKey();
+        if (activeCallKeys.containsKey(notifKey)) {
+            String caller = activeCallKeys.remove(notifKey);
+            try {
+                JSONObject obj = new JSONObject();
+                obj.put("type", "call");
+                obj.put("call_state", "ended");
+                obj.put("caller_name", caller);
+                obj.put("title", "📞 Call Ended");
+                obj.put("timestamp", System.currentTimeMillis());
+                ClipSyncService.broadcastJson(this, obj);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    public static void clearAllActiveCalls(android.content.Context ctx) {
+        if (!activeCallKeys.isEmpty()) {
+            for (String key : activeCallKeys.keySet()) {
+                String caller = activeCallKeys.remove(key);
+                try {
+                    JSONObject obj = new JSONObject();
+                    obj.put("type", "call");
+                    obj.put("call_state", "ended");
+                    obj.put("caller_name", caller);
+                    obj.put("title", "📞 Call Ended");
+                    obj.put("timestamp", System.currentTimeMillis());
+                    ClipSyncService.broadcastJson(ctx, obj);
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private boolean isCallNotification(StatusBarNotification sbn, Notification notification) {
+        if (notification == null) return false;
+
+        String category = notification.category;
+        if (Notification.CATEGORY_CALL.equals(category) || Notification.CATEGORY_MISSED_CALL.equals(category)) {
+            return true;
+        }
+
+        Bundle extras = notification.extras;
+        if (extras != null) {
+            if (extras.containsKey(Notification.EXTRA_CALL_PERSON) ||
+                extras.containsKey(Notification.EXTRA_CALL_TYPE) ||
+                "android.app.Notification$CallStyle".equals(extras.getString(Notification.EXTRA_TEMPLATE))) {
+                return true;
+            }
+        }
+
+        Notification.Action[] actions = notification.actions;
+        if (actions != null) {
+            for (Notification.Action a : actions) {
+                if (a != null && a.title != null) {
+                    String at = a.title.toString().toLowerCase();
+                    if (at.contains("answer") || at.contains("decline") ||
+                        at.contains("reject") || at.contains("accept")) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        String pkg = sbn != null ? sbn.getPackageName() : "";
+        if (pkg != null) {
+            String lowerPkg = pkg.toLowerCase();
+            if (lowerPkg.contains("dialer") || lowerPkg.contains("incall") || lowerPkg.contains("telecom") || lowerPkg.contains("phone")) {
+                if (extras != null) {
+                    CharSequence text = extras.getCharSequence(Notification.EXTRA_TEXT);
+                    if (text != null) {
+                        String lt = text.toString().toLowerCase();
+                        if (lt.contains("call") || lt.contains("ringing")) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private void handleCallNotification(StatusBarNotification sbn, Notification notification, String packageName) {
+        Bundle extras = notification.extras;
+        String title = "";
+        if (extras != null) {
+            CharSequence t = extras.getCharSequence(Notification.EXTRA_TITLE);
+            if (t != null && t.length() > 0) title = t.toString().trim();
+            if (title.isEmpty()) {
+                CharSequence bt = extras.getCharSequence(Notification.EXTRA_TITLE_BIG);
+                if (bt != null && bt.length() > 0) title = bt.toString().trim();
+            }
+        }
+        String text = "";
+        if (extras != null) {
+            CharSequence txt = extras.getCharSequence(Notification.EXTRA_TEXT);
+            if (txt != null && txt.length() > 0) text = txt.toString().trim();
+            if (text.isEmpty()) {
+                CharSequence st = extras.getCharSequence(Notification.EXTRA_SUB_TEXT);
+                if (st != null && st.length() > 0) text = st.toString().trim();
+            }
+        }
+        if (title.isEmpty() && notification.tickerText != null) {
+            title = notification.tickerText.toString().trim();
+        }
+
+        String appName = "Phone";
+        try {
+            PackageManager pm = getPackageManager();
+            ApplicationInfo appInfo = pm.getApplicationInfo(packageName, 0);
+            appName = pm.getApplicationLabel(appInfo).toString();
+        } catch (Exception ignored) {}
+
+        String category = notification.category;
+        boolean isMissed = Notification.CATEGORY_MISSED_CALL.equals(category) ||
+                (text != null && text.toLowerCase().contains("missed")) ||
+                (title != null && title.toLowerCase().contains("missed"));
+
+        String notifKey = sbn.getKey();
+
+        if (isMissed) {
+            activeCallKeys.remove(notifKey);
+            String caller = (title != null && !title.isEmpty()) ? title : "Unknown Caller";
+            if (appName != null && !appName.equalsIgnoreCase("Phone") && !appName.toLowerCase().contains("dialer") && !appName.toLowerCase().contains("contacts")) {
+                caller = caller + " (" + appName + ")";
+            }
+
+            try {
+                JSONObject obj = new JSONObject();
+                obj.put("type", "call");
+                obj.put("call_state", "missed");
+                obj.put("caller_name", caller);
+                obj.put("app_name", appName);
+                obj.put("title", "📞 Missed Call");
+                obj.put("content", "Missed call from " + caller);
+                obj.put("timestamp", sbn.getPostTime() > 0 ? sbn.getPostTime() : System.currentTimeMillis());
+                ClipSyncService.broadcastJson(this, obj);
+            } catch (Exception ignored) {}
+            return;
+        }
+
+        boolean hasAnswerAction = false;
+        Notification.Action[] actions = notification.actions;
+        if (actions != null) {
+            for (Notification.Action a : actions) {
+                if (a != null && a.title != null) {
+                    String at = a.title.toString().toLowerCase();
+                    if (at.contains("answer") || at.contains("accept")) {
+                        hasAnswerAction = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        int callType = extras != null ? extras.getInt("android.callType", -1) : -1;
+        boolean isIncomingRinging = hasAnswerAction || callType == 1 ||
+                (text != null && (text.toLowerCase().contains("incoming") || text.toLowerCase().contains("ringing"))) ||
+                (title != null && (title.toLowerCase().contains("incoming") || title.toLowerCase().contains("ringing")));
+
+        if (isIncomingRinging) {
+            String caller = (title != null && !title.isEmpty()) ? title : "Unknown Caller";
+            if (appName != null && !appName.equalsIgnoreCase("Phone") && !appName.toLowerCase().contains("dialer") && !appName.toLowerCase().contains("contacts")) {
+                caller = caller + " (" + appName + ")";
+            }
+
+            activeCallKeys.put(notifKey, caller);
+
+            long now = System.currentTimeMillis();
+            String dedupKey = notifKey + ":" + caller;
+            if (dedupKey.equals(lastAlertedCallKey) && (now - lastAlertedCallTime < 10000)) {
+                return;
+            }
+            lastAlertedCallKey = dedupKey;
+            lastAlertedCallTime = now;
+
+            try {
+                JSONObject obj = new JSONObject();
+                obj.put("type", "call");
+                obj.put("call_state", "ringing");
+                obj.put("caller_name", caller);
+                obj.put("app_name", appName);
+                obj.put("title", "📞 Incoming Call");
+                obj.put("content", caller + " is calling...");
+                obj.put("timestamp", sbn.getPostTime() > 0 ? sbn.getPostTime() : now);
+                ClipSyncService.broadcastJson(this, obj);
+            } catch (Exception ignored) {}
+        } else {
+            // Not ringing anymore (e.g. user answered call and notification updated to in-call)
+            if (activeCallKeys.containsKey(notifKey)) {
+                String caller = activeCallKeys.remove(notifKey);
+                try {
+                    JSONObject obj = new JSONObject();
+                    obj.put("type", "call");
+                    obj.put("call_state", "ended");
+                    obj.put("caller_name", caller);
+                    obj.put("title", "📞 Call Ended");
+                    obj.put("timestamp", System.currentTimeMillis());
+                    ClipSyncService.broadcastJson(this, obj);
+                } catch (Exception ignored) {}
+            }
+        }
+    }
 
     public static String extractOtpStatic(String text) {
         if (text == null || text.trim().isEmpty()) return null;

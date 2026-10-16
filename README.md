@@ -37,6 +37,16 @@
   - **Linux ➔ Android:** Right-click any file in Nautilus (GNOME Files) ➔ **Scripts ➔ Send to Phone (ClipSync)**, or run `clip-sync send <file>`. Photos land straight in your phone's Gallery (`Pictures/ClipSync`), and files in `Downloads/ClipSync`.
   - **Android ➔ Linux:** Share any image or document from your phone to **"Send to PC"**; files are saved straight to `~/Downloads` with desktop notifications.
 
+- 🪫 **Phone Battery Alert on Desktop**
+  - Real-time event-driven battery monitoring with virtually 0% idle CPU and network impact.
+  - Smart desktop notifications when phone battery is low (20%, 10%, and 5%) and when fully charged (100%).
+  - Inspect your phone's battery level and charging status directly from your terminal anytime via `clip-sync battery`.
+
+- 📞 **Incoming Call Alert (Read-Only)**
+  - Instant heads-up desktop notifications when your phone rings, displaying caller name and phone number.
+  - Seamless support for regular phone calls and VoIP apps (WhatsApp, Telegram, etc.).
+  - Read-only notification automatically closes when answered or changes to a "Missed Call" alert if unanswered.
+
 - 🔒 **Zero-Config End-to-End Encryption**
   - All communication (clipboard, files, URLs, and notifications) is automatically encrypted with **AES-256-GCM** using PBKDF2/HMAC-SHA256 key derivation.
   - File transfers are authenticated with time-bound cryptographic HMAC signatures.
@@ -108,6 +118,7 @@ go build -o clip-sync .
 | Command | Action |
 |---|---|
 | `clip-sync` | Start the background daemon (auto-configures desktop integration) |
+| `clip-sync battery` | Check connected phone battery percentage & charging status |
 | `clip-sync send <file\|url>` | Send any local file, image, or URL link to your phone |
 | `clip-sync send-link [url]` | Send highlighted link or copied tab to your phone |
 | `clip-sync setup` | Re-register GNOME shortcut (`Ctrl+Alt+P`) and Nautilus script |

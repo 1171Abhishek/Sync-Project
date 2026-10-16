@@ -153,6 +153,12 @@ func (n *SyncNode) handlePeer(conn net.Conn) {
 		case "notification":
 			n.handleNotification(msg)
 
+		case "battery":
+			n.handleBattery(msg)
+
+		case "call":
+			n.handleCall(msg)
+
 		case "clipboard", "":
 			cleanMsg := strings.TrimSpace(msg.Content)
 			n.mu.Lock()
