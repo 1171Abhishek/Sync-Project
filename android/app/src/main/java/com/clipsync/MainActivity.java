@@ -152,6 +152,59 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void showRenameDeviceDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Rename Device");
+
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(ClipSyncService.getDeviceName(this));
+        input.setSelection(input.getText().length());
+
+        FrameLayout container = new FrameLayout(this);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+        );
+        int margin = (int) (18 * getResources().getDisplayMetrics().density);
+        params.setMargins(margin, 0, margin, 0);
+        input.setLayoutParams(params);
+        container.addView(input);
+        builder.setView(container);
+
+        builder.setPositiveButton("Save", (dialog, which) -> {
+            String newName = input.getText().toString().trim();
+            if (!newName.isEmpty()) {
+                ClipSyncService.setCustomDeviceName(this, newName);
+                updateUI();
+            }
+        });
+        builder.setNegativeButton("Cancel", (dialog, which) -> dialog.cancel());
+        builder.show();
+    }
+
+    private void showConnectedDevicesDialog() {
+        Map<String, String> peersMap = ClipSyncService.getConnectedPeersMap();
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Connected Devices (" + peersMap.size() + ")");
+
+        if (peersMap.isEmpty()) {
+            builder.setMessage("No devices currently connected.\n\nEnsure your PC is running ClipSync and connected to the same Wi-Fi network.");
+        } else {
+            StringBuilder sb = new StringBuilder();
+            int index = 1;
+            for (Map.Entry<String, String> entry : peersMap.entrySet()) {
+                sb.append(index++).append(". ")
+                  .append(entry.getValue())
+                  .append(" (").append(entry.getKey()).append(")\n   Status: Live\n\n");
+            }
+            builder.setMessage(sb.toString().trim());
+        }
+
+        builder.setPositiveButton("OK", null);
+        builder.show();
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -185,6 +238,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateUI() {
         boolean isPaused = ClipSyncService.isSyncPaused(this);
+
+        if (tvDeviceNameSubtitle != null) {
+            tvDeviceNameSubtitle.setText("Device: " + ClipSyncService.getDeviceName(this));
+        }
 
         // Keep switch in sync with background state without triggering recursive callbacks
         if (switchMasterSync != null && switchMasterSync.isChecked() == isPaused) {
