@@ -76,3 +76,7 @@ __pycache__/
 *.pyo
 .pytest_cache/
 keystore_base64.txt
+
+# Rust target
+target/
+**/target/
