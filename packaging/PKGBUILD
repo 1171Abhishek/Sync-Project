@@ -8,17 +8,17 @@ url="https://github.com/1171Abhishek/Sync-Project"
 license=('GPL-3.0-only')
 depends=('wl-clipboard' 'libnotify' 'xdg-utils')
 optdepends=('xclip: for X11 clipboard fallback')
-makedepends=('go')
+makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  cd "Sync-Project-$pkgver"
-  go build -ldflags="-s -w" -o clip-sync .
+  cd "Sync-Project-$pkgver/clip-sync-rust"
+  cargo build --release --locked
 }
 
 package() {
   cd "Sync-Project-$pkgver"
-  install -Dm755 clip-sync "${pkgdir}/usr/bin/clip-sync"
+  install -Dm755 clip-sync-rust/target/release/clip-sync "${pkgdir}/usr/bin/clip-sync"
   install -Dm644 clip-sync.service "${pkgdir}/usr/lib/systemd/user/clip-sync.service"
 }

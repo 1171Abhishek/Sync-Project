@@ -5,7 +5,8 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 echo "🔨 [1/3] Compiling clip-sync binary..."
-go build -ldflags="-s -w" -o clip-sync .
+cargo build --release --manifest-path "$PROJECT_DIR/clip-sync-rust/Cargo.toml"
+cp "$PROJECT_DIR/clip-sync-rust/target/release/clip-sync" "$PROJECT_DIR/clip-sync"
 echo "✓ Compiled clip-sync binary successfully."
 
 # Ensure clip-sync.service exists

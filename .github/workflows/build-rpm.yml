@@ -13,7 +13,7 @@ jobs:
     steps:
       - name: Install Git & Build Tools
         run: |
-          dnf install -y git golang rpm-build systemd-rpm-macros
+          dnf install -y git rust cargo rpm-build systemd-rpm-macros
 
       - name: Configure Git Safe Directory
         run: |
