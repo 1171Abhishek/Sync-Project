@@ -36,6 +36,7 @@ captures/
 output.json
 
 # Linux Packaging Outputs
+dist/
 dist/rpmbuild/
 dist/deb_build/
 dist/arch_build/
@@ -80,3 +81,5 @@ keystore_base64.txt
 # Rust target
 target/
 **/target/
+**/*.rs.bk
+
