@@ -471,104 +471,13 @@ public class ClipSyncService extends AccessibilityService {
             } catch (Exception ignored) {}
         }
 
-        // 3. View Clicked or Long Clicked: Tapping / long-pressing items (Copy button, Authenticator codes)
+        // 3. View Clicked or Long Clicked: Tapping / long-pressing items
         if (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
             eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) {
-
-            boolean isAuthApp = pkg.contains("authenticator") ||
-                                pkg.contains("twofas") ||
-                                pkg.contains("aegis") ||
-                                pkg.contains("authy") ||
-                                pkg.contains("otp") ||
-                                pkg.contains("bitwarden") ||
-                                pkg.contains("1password") ||
-                                pkg.contains("keeper") ||
-                                pkg.contains("dashlane") ||
-                                pkg.contains("pass");
-
-            AccessibilityNodeInfo source = event.getSource();
-            boolean handled = false;
-
-            if (source != null) {
-                try {
-                    String text = source.getText() != null ? source.getText().toString().trim() : "";
-                    String desc = source.getContentDescription() != null ? source.getContentDescription().toString().trim() : "";
-                    String viewId = source.getViewIdResourceName() != null ? source.getViewIdResourceName().toLowerCase() : "";
-
-                    boolean isCopyButton = text.equalsIgnoreCase("copy") ||
-                                           text.toLowerCase().contains("copy") ||
-                                           desc.toLowerCase().contains("copy") ||
-                                           viewId.contains("copy");
-
-                    if (isCopyButton) {
-                        // User clicked a "Copy" button
-                        if (lastSelectedText != null && !lastSelectedText.trim().isEmpty()) {
-                            processAndBroadcast(lastSelectedText);
-                            lastSelectedText = null;
-                            handled = true;
-                        } else {
-                            // Look for sibling/parent text or OTP
-                            AccessibilityNodeInfo parent = source.getParent();
-                            if (parent != null) {
-                                String otp = extractOtpFromNode(parent);
-                                if (otp != null && !otp.isEmpty()) {
-                                    processAndBroadcast(otp);
-                                    handled = true;
-                                } else {
-                                    String siblingText = extractTextFromSiblings(source);
-                                    if (siblingText != null && !siblingText.isEmpty()) {
-                                        processAndBroadcast(siblingText);
-                                        handled = true;
-                                    }
-                                }
-                                parent.recycle();
-                            }
-                        }
-                    }
-
-                    if (!handled) {
-                        // Traverse up to 5 levels to find an OTP in the tapped card/row
-                        AccessibilityNodeInfo curr = source;
-                        for (int depth = 0; depth < 5 && curr != null; depth++) {
-                            String otp = extractOtpFromNode(curr);
-                            if (otp != null && !otp.isEmpty()) {
-                                processAndBroadcast(otp);
-                                handled = true;
-                                break;
-                            }
-                            AccessibilityNodeInfo p = curr.getParent();
-                            if (curr != source) {
-                                curr.recycle();
-                            }
-                            curr = p;
-                        }
-                        if (curr != null && curr != source) {
-                            curr.recycle();
-                        }
-                    }
-                } catch (Exception ignored) {
-                } finally {
-                    source.recycle();
-                }
-            }
-
-            // Fallback for Authenticator apps if tapping didn't give node or OTP
-            if (!handled && isAuthApp) {
-                try {
-                    AccessibilityNodeInfo root = getRootInActiveWindow();
-                    if (root != null) {
-                        String otp = extractOtpFromNode(root);
-                        if (otp != null && !otp.isEmpty()) {
-                            processAndBroadcast(otp);
-                            handled = true;
-                        }
-                        root.recycle();
-                    }
-                } catch (Exception ignored) {}
-            }
-
-            mainHandler.postDelayed(this::checkClipboard, 150);
-            mainHandler.postDelayed(this::checkClipboard, 400);
+            // When an item or copy button is clicked, check the actual system clipboard
+            mainHandler.postDelayed(this::checkClipboard, 100);
+            mainHandler.postDelayed(this::checkClipboard, 300);
+            mainHandler.postDelayed(this::checkClipboard, 600);
         }
 
         // 4. Notification / Toast state changed (e.g. "Verification code copied to clipboard")
@@ -584,50 +493,15 @@ public class ClipSyncService extends AccessibilityService {
                         }
                         String alertContent = sb.toString().trim();
                         if (!alertContent.isEmpty()) {
-                            // First, check if the toast/alert itself has an OTP
-                            String otp = extractOtp(alertContent);
-                            if (otp != null && !otp.isEmpty()) {
-                                processAndBroadcast(otp);
-                            }
-
                             String lower = alertContent.toLowerCase();
                             boolean isCopiedToast = lower.contains("copied") ||
-                                                   lower.contains("clipboard") ||
-                                                   lower.contains("verification") ||
-                                                   lower.contains("token") ||
-                                                   lower.contains("code");
+                                                   lower.contains("clipboard");
 
                             if (isCopiedToast) {
-                                if (lastSelectedText != null && !lastSelectedText.trim().isEmpty()) {
-                                    processAndBroadcast(lastSelectedText);
-                                    lastSelectedText = null;
-                                } else {
-                                    // App toasted "Copied to clipboard" - inspect active window to grab the code!
-                                    try {
-                                        AccessibilityNodeInfo root = getRootInActiveWindow();
-                                        if (root != null) {
-                                            String windowOtp = extractOtpFromNode(root);
-                                            if (windowOtp != null && !windowOtp.isEmpty()) {
-                                                processAndBroadcast(windowOtp);
-                                            }
-                                            root.recycle();
-                                        }
-                                    } catch (Exception ignored) {}
-                                }
                                 mainHandler.post(this::checkClipboard);
                                 mainHandler.postDelayed(this::checkClipboard, 200);
+                                mainHandler.postDelayed(this::checkClipboard, 500);
                             }
-
-                            JSONObject obj = new JSONObject();
-                            obj.put("type", "notification");
-                            obj.put("app_name", pkg);
-                            obj.put("title", "Alert");
-                            obj.put("content", alertContent);
-                            if (otp != null && !otp.isEmpty()) {
-                                obj.put("otp", otp);
-                            }
-                            obj.put("timestamp", System.currentTimeMillis());
-                            sendJsonToPeers(obj);
                         }
                     }
                 }

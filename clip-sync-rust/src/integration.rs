@@ -30,7 +30,21 @@ pub fn ensure_desktop_integrations(verbose: bool) {
         }
     }
 
-    // 3. User systemd service
+    // 3. Nautilus top-level Python extension
+    if let Err(e) = ensure_nautilus_python_extension(&exec_str, verbose) {
+        if verbose {
+            eprintln!("[Warning] Nautilus Python extension check: {}", e);
+        }
+    }
+
+    // 4. Desktop application entry (for file manager Open With)
+    if let Err(e) = ensure_desktop_entry(&exec_str, verbose) {
+        if verbose {
+            eprintln!("[Warning] Desktop entry check: {}", e);
+        }
+    }
+
+    // 5. User systemd service
     if let Err(e) = ensure_user_service(&exec_str, verbose) {
         if verbose {
             eprintln!("[Warning] User systemd service check: {}", e);
@@ -220,6 +234,93 @@ WantedBy=graphical-session.target
 
     if verbose {
         println!("[Systemd] Registered user systemd service: {:?}", service_file);
+    }
+    Ok(())
+}
+
+fn ensure_nautilus_python_extension(exec_path: &str, verbose: bool) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let ext_dir = PathBuf::from(home).join(".local").join("share").join("nautilus-python").join("extensions");
+    let _ = fs::create_dir_all(&ext_dir);
+
+    let ext_file = ext_dir.join("clip_sync_nautilus.py");
+    let desired_content = format!(
+        r#"# ClipSync Top-Level Nautilus Menu Extension
+import os
+import subprocess
+from gi.repository import Nautilus, GObject
+
+class ClipSyncExtension(GObject.GObject, Nautilus.MenuProvider):
+    def get_file_items(self, *args):
+        files = args[-1]
+        if not files:
+            return []
+
+        item = Nautilus.MenuItem(
+            name="ClipSync::SendToPhone",
+            label="Send to Phone (ClipSync)",
+            tip="Send file directly to your paired phone via ClipSync",
+            icon="phone"
+        )
+        item.connect("activate", self.menu_activate, files)
+        return [item]
+
+    def menu_activate(self, menu, files):
+        for f in files:
+            try:
+                path = f.get_location().get_path()
+                if path and os.path.exists(path):
+                    subprocess.Popen(["{}", "send", path])
+            except Exception:
+                pass
+"#,
+        exec_path
+    );
+
+    if let Ok(existing) = fs::read_to_string(&ext_file) {
+        if existing == desired_content {
+            return Ok(());
+        }
+    }
+
+    fs::write(&ext_file, desired_content).map_err(|e| e.to_string())?;
+    if verbose {
+        println!("[Action] Configured Nautilus top-level context menu extension: {:?}", ext_file);
+    }
+    Ok(())
+}
+
+fn ensure_desktop_entry(exec_path: &str, verbose: bool) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let apps_dir = PathBuf::from(home).join(".local").join("share").join("applications");
+    let _ = fs::create_dir_all(&apps_dir);
+
+    let desktop_file = apps_dir.join("clip-sync-send.desktop");
+    let desired_content = format!(
+        r#"[Desktop Entry]
+Type=Application
+Name=Send to Phone (ClipSync)
+Comment=Send selected file to Android phone via ClipSync
+Exec={} send %F
+Icon=phone
+Terminal=false
+NoDisplay=false
+MimeType=all/allfiles;application/octet-stream;video/*;image/*;audio/*;text/*;application/pdf;
+Categories=Utility;
+"#,
+        exec_path
+    );
+
+    if let Ok(existing) = fs::read_to_string(&desktop_file) {
+        if existing == desired_content {
+            return Ok(());
+        }
+    }
+
+    fs::write(&desktop_file, desired_content).map_err(|e| e.to_string())?;
+    let _ = Command::new("update-desktop-database").arg(apps_dir).status();
+    if verbose {
+        println!("[Action] Configured desktop application entry: {:?}", desktop_file);
     }
     Ok(())
 }

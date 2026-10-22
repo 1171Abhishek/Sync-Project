@@ -349,6 +349,9 @@ async fn main() {
         }
     }
 
+    // Automatically configure desktop integrations (GNOME shortcut, Nautilus script/extension, .desktop entry)
+    ensure_desktop_integrations(false);
+
     let node = SyncNode::new();
     println!("ClipSync (Rust Edition) started!");
     println!("[Device] Device ID: {}", node.device_id);
