@@ -54,8 +54,8 @@ Section: net
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: Abhishek Kumar <abhishek@example.com>
-Depends: wl-clipboard, libnotify-bin, xdg-utils
-Recommends: xclip
+Depends: wl-clipboard, xclip, libnotify-bin, xdg-utils
+Recommends: python3-nautilus
 Description: Seamless Linux and Android continuity daemon
  ClipSync is a high-speed, lightweight Linux and Android continuity tool.
  Features real-time clipboard sync, incoming call alerts, phone battery

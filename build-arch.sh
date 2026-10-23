@@ -51,8 +51,8 @@ pkgdesc="Seamless Linux and Android continuity daemon"
 arch=('x86_64')
 url="https://github.com/1171Abhishek/Sync-Project"
 license=('GPL-3.0-only')
-depends=('wl-clipboard' 'libnotify' 'xdg-utils')
-optdepends=('xclip: for X11 clipboard fallback')
+depends=('wl-clipboard' 'xclip' 'libnotify' 'xdg-utils')
+optdepends=('python-nautilus: for top-level Nautilus right-click context menu')
 
 package() {
   install -Dm755 "${startdir}/clip-sync" "${pkgdir}/usr/bin/clip-sync"

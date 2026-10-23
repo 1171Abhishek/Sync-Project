@@ -10,6 +10,7 @@ Requires:       wl-clipboard
 Requires:       xclip
 Requires:       libnotify
 Requires:       xdg-utils
+Recommends:     nautilus-python
 
 # Disable automatic debuginfo package generation since Go manages its own binaries
 %global debug_package %{nil}

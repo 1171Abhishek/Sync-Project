@@ -17,6 +17,10 @@ depends:
   - libnotify
   - xdg-utils
 
+recommends:
+  - nautilus-python
+  - python3-nautilus
+
 contents:
   - src: ./clip-sync
     dst: /usr/bin/clip-sync
