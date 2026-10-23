@@ -7,9 +7,9 @@ License:        GPL-3.0
 URL:            https://github.com/1171Abhishek/Sync-Project
 
 Requires:       wl-clipboard
+Requires:       xclip
 Requires:       libnotify
 Requires:       xdg-utils
-Recommends:     xclip
 
 # Disable automatic debuginfo package generation since Go manages its own binaries
 %global debug_package %{nil}

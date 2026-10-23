@@ -17,6 +17,25 @@ pub enum DisplayBackend {
 }
 
 pub fn detect_display_backend() -> DisplayBackend {
+    let is_gnome = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_uppercase()
+        .contains("GNOME")
+        || std::env::var("DESKTOP_SESSION")
+            .unwrap_or_default()
+            .to_uppercase()
+            .contains("GNOME");
+
+    // On GNOME Wayland, Mutter maintains a native kernel-speed Wayland <-> XWayland clipboard bridge.
+    // However, Mutter does NOT implement wlr-data-control. Because of this, wl-clipboard (wl-paste/wl-copy)
+    // resorts to creating transient 1x1 GUI windows to steal focus, which causes Dash-to-Dock bouncing,
+    // a persistent "wl-clipboard" window/dock icon, and screen flickering.
+    // If running under GNOME and XWayland (DISPLAY) is available with xclip installed,
+    // use xclip to achieve 100% surface-less, flicker-free clipboard synchronization.
+    if is_gnome && std::env::var("DISPLAY").is_ok() && cmd_exists("xclip") {
+        return DisplayBackend::X11;
+    }
+
     if std::env::var("WAYLAND_DISPLAY").is_ok() {
         DisplayBackend::Wayland
     } else if std::env::var("DISPLAY").is_ok() {
@@ -254,6 +273,15 @@ async fn fetch_x11_text() -> Option<String> {
         }
         if let Ok(out) = TokioCommand::new("xclip")
             .args(["-selection", "clipboard", "-o", "-t", "text/plain"])
+            .output()
+            .await
+        {
+            if out.status.success() && is_valid_text_clipboard(&out.stdout) {
+                return String::from_utf8(out.stdout).ok();
+            }
+        }
+        if let Ok(out) = TokioCommand::new("xclip")
+            .args(["-selection", "clipboard", "-o"])
             .output()
             .await
         {

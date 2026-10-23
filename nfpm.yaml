@@ -13,11 +13,9 @@ license: "GPL-3.0"
 
 depends:
   - wl-clipboard
+  - xclip
   - libnotify
   - xdg-utils
-
-recommends:
-  - xclip
 
 contents:
   - src: ./clip-sync

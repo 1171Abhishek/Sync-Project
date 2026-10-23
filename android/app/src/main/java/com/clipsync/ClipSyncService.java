@@ -471,13 +471,82 @@ public class ClipSyncService extends AccessibilityService {
             } catch (Exception ignored) {}
         }
 
-        // 3. View Clicked or Long Clicked: Tapping / long-pressing items
+        // 3. View Clicked or Long Clicked: Tapping / long-pressing items (Copy button, Authenticator codes)
         if (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
             eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) {
-            // When an item or copy button is clicked, check the actual system clipboard
-            mainHandler.postDelayed(this::checkClipboard, 100);
-            mainHandler.postDelayed(this::checkClipboard, 300);
-            mainHandler.postDelayed(this::checkClipboard, 600);
+
+            boolean isAuthApp = pkg.contains("authenticator") ||
+                                pkg.contains("twofas") ||
+                                pkg.contains("aegis") ||
+                                pkg.contains("authy") ||
+                                pkg.contains("otp") ||
+                                pkg.contains("bitwarden") ||
+                                pkg.contains("1password") ||
+                                pkg.contains("keeper") ||
+                                pkg.contains("dashlane") ||
+                                pkg.contains("pass");
+
+            AccessibilityNodeInfo source = event.getSource();
+            boolean handled = false;
+
+            if (source != null) {
+                try {
+                    String text = source.getText() != null ? source.getText().toString().trim() : "";
+                    String desc = source.getContentDescription() != null ? source.getContentDescription().toString().trim() : "";
+                    String viewId = source.getViewIdResourceName() != null ? source.getViewIdResourceName().toLowerCase() : "";
+
+                    boolean isCopyButton = text.equalsIgnoreCase("copy") ||
+                                           text.toLowerCase().contains("copy") ||
+                                           desc.toLowerCase().contains("copy") ||
+                                           viewId.contains("copy");
+
+                    if (isCopyButton) {
+                        // User clicked a "Copy" button in standard text selection
+                        if (lastSelectedText != null && !lastSelectedText.trim().isEmpty()) {
+                            processAndBroadcast(lastSelectedText);
+                            lastSelectedText = null;
+                            handled = true;
+                        } else {
+                            AccessibilityNodeInfo parent = source.getParent();
+                            if (parent != null) {
+                                String siblingText = extractTextFromSiblings(source);
+                                if (siblingText != null && !siblingText.isEmpty()) {
+                                    processAndBroadcast(siblingText);
+                                    handled = true;
+                                }
+                                parent.recycle();
+                            }
+                        }
+                    }
+
+                    // In Authenticator apps, tapping the code card/row copies the TOTP code
+                    if (!handled && isAuthApp) {
+                        AccessibilityNodeInfo curr = source;
+                        for (int depth = 0; depth < 5 && curr != null; depth++) {
+                            String otp = extractOtpFromNode(curr);
+                            if (otp != null && !otp.isEmpty()) {
+                                processAndBroadcast(otp);
+                                handled = true;
+                                break;
+                            }
+                            AccessibilityNodeInfo p = curr.getParent();
+                            if (curr != source) {
+                                curr.recycle();
+                            }
+                            curr = p;
+                        }
+                        if (curr != null && curr != source) {
+                            curr.recycle();
+                        }
+                    }
+                } catch (Exception ignored) {
+                } finally {
+                    source.recycle();
+                }
+            }
+
+            mainHandler.postDelayed(this::checkClipboard, 150);
+            mainHandler.postDelayed(this::checkClipboard, 400);
         }
 
         // 4. Notification / Toast state changed (e.g. "Verification code copied to clipboard")
@@ -498,9 +567,23 @@ public class ClipSyncService extends AccessibilityService {
                                                    lower.contains("clipboard");
 
                             if (isCopiedToast) {
+                                if (lastSelectedText != null && !lastSelectedText.trim().isEmpty()) {
+                                    processAndBroadcast(lastSelectedText);
+                                    lastSelectedText = null;
+                                } else {
+                                    try {
+                                        AccessibilityNodeInfo root = getRootInActiveWindow();
+                                        if (root != null) {
+                                            String windowOtp = extractOtpFromNode(root);
+                                            if (windowOtp != null && !windowOtp.isEmpty()) {
+                                                processAndBroadcast(windowOtp);
+                                            }
+                                            root.recycle();
+                                        }
+                                    } catch (Exception ignored) {}
+                                }
                                 mainHandler.post(this::checkClipboard);
                                 mainHandler.postDelayed(this::checkClipboard, 200);
-                                mainHandler.postDelayed(this::checkClipboard, 500);
                             }
                         }
                     }
@@ -567,18 +650,7 @@ public class ClipSyncService extends AccessibilityService {
             return m68.group(1);
         }
 
-        // 5. Standalone 4 to 5 digits (excluding years 2020-2030)
-        Pattern p45 = Pattern.compile("(?<!\\d)(\\d{4,5})(?!\\d)");
-        Matcher m45 = p45.matcher(t);
-        if (m45.find()) {
-            try {
-                int val = Integer.parseInt(m45.group(1));
-                if (val < 2020 || val > 2030) {
-                    return m45.group(1);
-                }
-            } catch (Exception ignored) {}
-        }
-
+        // Note: 4-digit pattern removed so account numbers/labels like "1171" are NEVER matched as OTP codes!
         return null;
     }
 
