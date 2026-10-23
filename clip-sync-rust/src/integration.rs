@@ -23,17 +23,22 @@ pub fn ensure_desktop_integrations(verbose: bool) {
         }
     }
 
-    // 2. Nautilus script
-    if let Err(e) = ensure_nautilus_script(&exec_str, verbose) {
-        if verbose {
-            eprintln!("[Warning] Nautilus script check: {}", e);
+    // 2. Nautilus Integration
+    // When nautilus-python is installed, use the clean top-level context menu extension
+    // and remove any legacy script so Nautilus does NOT display a duplicate "Scripts >" menu.
+    // If nautilus-python is not installed, fallback to the script inside "Scripts >".
+    if has_nautilus_python() {
+        if let Err(e) = ensure_nautilus_python_extension(&exec_str, verbose) {
+            if verbose {
+                eprintln!("[Warning] Nautilus Python extension check: {}", e);
+            }
         }
-    }
-
-    // 3. Nautilus top-level Python extension
-    if let Err(e) = ensure_nautilus_python_extension(&exec_str, verbose) {
-        if verbose {
-            eprintln!("[Warning] Nautilus Python extension check: {}", e);
+        remove_nautilus_script();
+    } else {
+        if let Err(e) = ensure_nautilus_script(&exec_str, verbose) {
+            if verbose {
+                eprintln!("[Warning] Nautilus script check: {}", e);
+            }
         }
     }
 
@@ -151,6 +156,36 @@ fn ensure_gnome_shortcut(exec_path: &str, verbose: bool) -> Result<(), String> {
         println!("[OK] Registered GNOME shortcut: [Ctrl + Alt + P] -> {}", desired_command);
     }
     Ok(())
+}
+
+fn has_nautilus_python() -> bool {
+    let check_paths = [
+        "/usr/lib64/nautilus/extensions-4/libnautilus-python.so",
+        "/usr/lib/nautilus/extensions-4/libnautilus-python.so",
+        "/usr/lib/x86_64-linux-gnu/nautilus/extensions-4/libnautilus-python.so",
+        "/usr/lib/aarch64-linux-gnu/nautilus/extensions-4/libnautilus-python.so",
+        "/usr/share/nautilus-python",
+    ];
+    for p in &check_paths {
+        if std::path::Path::new(p).exists() {
+            return true;
+        }
+    }
+    false
+}
+
+fn remove_nautilus_script() {
+    if let Ok(home) = std::env::var("HOME") {
+        let script_path = PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("nautilus")
+            .join("scripts")
+            .join("Send to Phone (ClipSync)");
+        if script_path.exists() {
+            let _ = fs::remove_file(script_path);
+        }
+    }
 }
 
 fn ensure_nautilus_script(exec_path: &str, verbose: bool) -> Result<(), String> {
