@@ -35,14 +35,26 @@ pub fn open_browser_tab(url_str: &str) -> Result<(), String> {
     }
 
     if cmd_exists("xdg-open") {
-        Command::new("xdg-open")
-            .arg("--")
+        if Command::new("xdg-open")
             .arg(clean)
             .spawn()
-            .map_err(|e| format!("Failed to spawn xdg-open: {}", e))?;
-        return Ok(());
+            .is_ok()
+        {
+            return Ok(());
+        }
     }
-    Err("xdg-open utility not found".to_string())
+
+    if cmd_exists("gio") {
+        if Command::new("gio")
+            .args(["open", clean])
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    Err("No browser launcher found (xdg-open / gio)".to_string())
 }
 
 pub async fn handle_url(msg: &SyncMessage, clipboard: &ClipboardManager) {
