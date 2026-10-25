@@ -398,7 +398,7 @@ impl SyncNode {
         );
     }
 
-    async fn handle_battery(&self, msg: &SyncMessage) {
+    pub async fn handle_battery(&self, msg: &SyncMessage) {
         let level = msg.battery_level.unwrap_or(0);
         let charging = msg.is_charging.unwrap_or(false);
         let status = msg.battery_status.as_deref().unwrap_or("status");
@@ -455,7 +455,7 @@ impl SyncNode {
         }
     }
 
-    async fn handle_call(&self, msg: &SyncMessage) {
+    pub async fn handle_call(&self, msg: &SyncMessage) {
         let caller = msg.caller_name.as_deref().unwrap_or("").trim();
         let number = msg.phone_number.as_deref().unwrap_or("").trim();
 
@@ -485,7 +485,7 @@ impl SyncNode {
                     0,
                     *active_id,
                 );
-                *active_id = new_id;
+                *active_id = if new_id > 0 { new_id } else { 1 };
             }
             "ended" => {
                 println!("[Call] Call ended ({})", display_name);
