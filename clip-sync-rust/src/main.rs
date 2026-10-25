@@ -13,7 +13,7 @@ mod url_handler;
 mod utils;
 
 use crypto::CryptoManager;
-use discovery::DiscoveryManager;
+use discovery::{refresh_active_peers, DiscoveryManager};
 use file_server::{send_file_to_phone, start_file_server};
 use integration::ensure_desktop_integrations;
 use node::SyncNode;
@@ -82,8 +82,13 @@ fn read_battery_info() -> Option<BatteryInfo> {
     None
 }
 
-fn show_connected_devices() {
-    let active_peers = get_active_peers_list();
+async fn show_connected_devices(force_refresh: bool) {
+    let mut active_peers = get_active_peers_list();
+    if force_refresh || active_peers.is_empty() {
+        println!("[Refresh] Scanning local Wi-Fi for ClipSync devices in real time...");
+        active_peers = refresh_active_peers(800).await;
+    }
+
     if active_peers.is_empty() {
         println!("[Devices] Connected Devices: 0");
         println!("   No active peers connected. Ensure devices are on the same Wi-Fi.");
@@ -235,8 +240,27 @@ async fn main() {
             return;
         }
 
+        if arg == "refresh" || arg == "scan" {
+            println!("[Refresh] Scanning local Wi-Fi for ClipSync devices in real time...");
+            let start = std::time::Instant::now();
+            let peers = refresh_active_peers(800).await;
+            let elapsed = start.elapsed();
+            if peers.is_empty() {
+                println!("[Refresh] 0 devices discovered ({:.2}s). Ensure devices are on the same Wi-Fi.", elapsed.as_secs_f32());
+            } else {
+                println!("[Refresh] Found {} active device(s) ({:.2}s):", peers.len(), elapsed.as_secs_f32());
+                for (i, peer) in peers.iter().enumerate() {
+                    let name = peer.device_name.as_deref().unwrap_or("Phone");
+                    println!("   {}. 📱 {} ({}) [Live]", i + 1, name, peer.ip);
+                }
+                println!("[OK] Active device list updated in real time.");
+            }
+            return;
+        }
+
         if arg == "devices" || arg == "peers" {
-            show_connected_devices();
+            let force = args.iter().any(|a| a == "--refresh" || a == "-r" || a == "refresh");
+            show_connected_devices(force).await;
             return;
         }
 
@@ -315,7 +339,8 @@ async fn main() {
             println!("  clip-sync                 Start background daemon");
             println!("  clip-sync version         Print ClipSync version");
             println!("  clip-sync battery         Check connected phone battery percentage & status");
-            println!("  clip-sync devices         Show list of active connected phone peers");
+            println!("  clip-sync devices [-r]    Show active connected peers (optional -r to force refresh)");
+            println!("  clip-sync refresh         Scan local Wi-Fi and refresh connected devices in real time");
             println!("  clip-sync test-battery    Simulate phone low battery & full charge alerts");
             println!("  clip-sync test-call [name] Simulate incoming call, auto-dismiss, and missed call");
             println!("  clip-sync send <file|url> [device] Send image, file, or URL link to device(s)");

@@ -150,11 +150,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (btnRefreshDevices != null) {
-            btnRefreshDevices.setOnClickListener(v -> {
-                ClipSyncService.sendDiscoveryProbe(this);
-                Toast.makeText(this, "Scanning for ClipSync devices...", Toast.LENGTH_SHORT).show();
-                updateUI();
-            });
+            btnRefreshDevices.setOnClickListener(v -> triggerRealtimeRefresh());
         }
 
         if (btnSendFileToDevice != null) {
@@ -192,6 +188,42 @@ public class MainActivity extends AppCompatActivity {
                 requestIgnoreBatteryOptimization();
             }
         });
+    }
+
+    private boolean isRefreshing = false;
+
+    private void triggerRealtimeRefresh() {
+        if (isRefreshing) return;
+        isRefreshing = true;
+
+        if (btnRefreshDevices != null) {
+            btnRefreshDevices.setText("Scanning 🔄");
+            btnRefreshDevices.setEnabled(false);
+        }
+        if (tvDeviceCardSubtitle != null) {
+            tvDeviceCardSubtitle.setText("Scanning Wi-Fi for ClipSync devices in real time...");
+        }
+
+        Toast.makeText(this, "Scanning for ClipSync devices...", Toast.LENGTH_SHORT).show();
+
+        ClipSyncService.refreshDevices(this, () -> runOnUiThread(() -> {
+            isRefreshing = false;
+            if (btnRefreshDevices != null) {
+                btnRefreshDevices.setText("Refresh 🔄");
+                btnRefreshDevices.setEnabled(true);
+            }
+            updateUI();
+            Map<String, String> map = ClipSyncService.getConnectedPeersMap();
+            if (map.isEmpty()) {
+                Toast.makeText(MainActivity.this, "No devices found on Wi-Fi", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(MainActivity.this, "✓ Refreshed: " + map.size() + " device(s) online", Toast.LENGTH_SHORT).show();
+            }
+        }));
+
+        // Intermediate updates to surface responding devices as soon as packets arrive
+        statusHandler.postDelayed(this::updateUI, 150);
+        statusHandler.postDelayed(this::updateUI, 400);
     }
 
     private void showRenameDeviceDialog() {
@@ -237,8 +269,8 @@ public class MainActivity extends AppCompatActivity {
         if (peersMap.isEmpty()) {
             builder.setMessage("No devices currently connected.\n\nEnsure your PC or other phones are connected to the same Wi-Fi network and ClipSync is active.");
             builder.setPositiveButton("Search Now", (d, w) -> {
-                ClipSyncService.sendDiscoveryProbe(this);
-                Toast.makeText(this, "Searching for ClipSync devices...", Toast.LENGTH_SHORT).show();
+                triggerRealtimeRefresh();
+                statusHandler.postDelayed(this::showConnectedDevicesDialog, 600);
             });
             builder.setNegativeButton("Close", null);
         } else {
@@ -258,6 +290,10 @@ public class MainActivity extends AppCompatActivity {
                     Map.Entry<String, String> selected = entries.get(which);
                     showDeviceActionDialog(selected.getKey(), selected.getValue());
                 }
+            });
+            builder.setPositiveButton("🔄 Refresh", (dialog, which) -> {
+                triggerRealtimeRefresh();
+                statusHandler.postDelayed(this::showConnectedDevicesDialog, 600);
             });
             builder.setNegativeButton("Close", null);
         }

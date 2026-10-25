@@ -223,4 +223,23 @@ public class CryptoUtils {
                  .apply();
         } catch (Exception ignored) {}
     }
+
+    public static List<String> getArpNeighbors() {
+        List<String> list = new ArrayList<>();
+        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader("/proc/net/arp"))) {
+            String line;
+            boolean first = true;
+            while ((line = br.readLine()) != null) {
+                if (first) { first = false; continue; }
+                String[] parts = line.trim().split("\\s+");
+                if (parts.length > 3 && !"00:00:00:00:00:00".equals(parts[3])) {
+                    String ip = parts[0];
+                    if (!isLocalIp(ip) && !"0.0.0.0".equals(ip) && !list.contains(ip)) {
+                        list.add(ip);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return list;
+    }
 }

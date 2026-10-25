@@ -142,24 +142,101 @@ public class ClipSyncService extends AccessibilityService {
         }
     }
 
+    public static void refreshDevices(Context ctx, Runnable onComplete) {
+        new Thread(() -> {
+            try {
+                // 1. Prune disconnected or dead sockets immediately
+                synchronized (peers) {
+                    java.util.Iterator<Map.Entry<String, Socket>> it = peers.entrySet().iterator();
+                    while (it.hasNext()) {
+                        Map.Entry<String, Socket> entry = it.next();
+                        Socket s = entry.getValue();
+                        if (s == null || s.isClosed() || !s.isConnected()) {
+                            it.remove();
+                            peerNames.remove(entry.getKey());
+                        }
+                    }
+                }
+                notifyPeerStateChanged();
+
+                String devId = (instance != null && instance.deviceId != null) ? instance.deviceId : "android-" + (System.currentTimeMillis() % 10000);
+                String devName = getDeviceName(ctx != null ? ctx : instance);
+
+                // 2. Collect broadcast targets, known peers, and ARP neighbors
+                Set<InetAddress> targets = new HashSet<>(CryptoUtils.getBroadcastAddresses());
+                try {
+                    targets.add(InetAddress.getByName("255.255.255.255"));
+                } catch (Exception ignored) {}
+
+                Set<String> unicastIps = new HashSet<>(CryptoUtils.getKnownPeerIps(ctx != null ? ctx : instance));
+                unicastIps.addAll(CryptoUtils.getArpNeighbors());
+
+                for (String ip : unicastIps) {
+                    try {
+                        if (!CryptoUtils.isLocalIp(ip)) {
+                            targets.add(InetAddress.getByName(ip));
+                        }
+                    } catch (Exception ignored) {}
+                }
+
+                // 3. Dual UDP probe burst (probe + announcement)
+                byte[] probePacket = ("CLIP_SYNC:probe:" + devId + ":" + devName).getBytes(StandardCharsets.UTF_8);
+                byte[] beaconPacket = ("CLIP_SYNC:" + devId + ":" + devName).getBytes(StandardCharsets.UTF_8);
+
+                for (int round = 0; round < 2; round++) {
+                    try (DatagramSocket socket = new DatagramSocket()) {
+                        socket.setBroadcast(true);
+                        for (InetAddress target : targets) {
+                            try {
+                                socket.send(new DatagramPacket(probePacket, probePacket.length, target, UDP_PORT));
+                                socket.send(new DatagramPacket(beaconPacket, beaconPacket.length, target, UDP_PORT));
+                            } catch (Exception ignored) {}
+                        }
+                    } catch (Exception ignored) {}
+                    try { Thread.sleep(60); } catch (Exception ignored) {}
+                }
+
+                // 4. Fast TCP connect to known peers & ARP neighbors not yet connected
+                for (String ip : unicastIps) {
+                    if (CryptoUtils.isLocalIp(ip)) continue;
+                    boolean alreadyConnected;
+                    synchronized (peers) {
+                        Socket s = peers.get(ip);
+                        alreadyConnected = s != null && !s.isClosed() && s.isConnected();
+                    }
+                    if (!alreadyConnected) {
+                        final String connectIp = ip;
+                        new Thread(() -> {
+                            try {
+                                Socket socket = new Socket();
+                                socket.connect(new InetSocketAddress(connectIp, TCP_PORT), 500);
+                                if (instance != null) {
+                                    new Thread(() -> instance.handlePeer(socket)).start();
+                                }
+                            } catch (Exception ignored) {}
+                        }).start();
+                    }
+                }
+
+                // Brief pause to allow rapid responses to arrive and settle
+                try { Thread.sleep(400); } catch (Exception ignored) {}
+                notifyPeerStateChanged();
+            } finally {
+                if (onComplete != null) {
+                    try {
+                        onComplete.run();
+                    } catch (Exception ignored) {}
+                }
+            }
+        }).start();
+    }
+
     public static void sendDiscoveryProbe() {
-        sendDiscoveryProbe(instance);
+        refreshDevices(instance, null);
     }
 
     public static void sendDiscoveryProbe(Context ctx) {
-        new Thread(() -> {
-            try (DatagramSocket socket = new DatagramSocket()) {
-                socket.setBroadcast(true);
-                String devId = (instance != null && instance.deviceId != null) ? instance.deviceId : "android-" + (System.currentTimeMillis() % 10000);
-                String devName = getDeviceName(ctx != null ? ctx : instance);
-                byte[] beacon = ("CLIP_SYNC:" + devId + ":" + devName).getBytes(StandardCharsets.UTF_8);
-                for (InetAddress bcast : CryptoUtils.getBroadcastAddresses()) {
-                    try {
-                        socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
-                    } catch (Exception ignored) {}
-                }
-            } catch (Exception ignored) {}
-        }).start();
+        refreshDevices(ctx, null);
     }
 
     public void acquireWakeLockBriefly(long millis) {
@@ -1407,10 +1484,24 @@ public class ClipSyncService extends AccessibilityService {
 
                         // If probe or ping, reply immediately with device ID and name so peer can discover phone instantly
                         if (msg.startsWith("CLIP_SYNC:probe") || msg.startsWith("CLIP_SYNC:ping")) {
+                            String[] parts = msg.split(":", 4);
+                            if (parts.length >= 3) {
+                                String probeId = parts[2];
+                                String probeName = parts.length >= 4 ? parts[3] : "";
+                                if (!probeId.equals(deviceId) && !probeName.isEmpty()) {
+                                    peerNames.put(peerIp, probeName);
+                                    notifyPeerStateChanged();
+                                }
+                            }
                             try (DatagramSocket replySock = new DatagramSocket()) {
                                 byte[] reply = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this)).getBytes(StandardCharsets.UTF_8);
                                 replySock.send(new DatagramPacket(reply, reply.length, packet.getSocketAddress()));
                             } catch (Exception ignored) {}
+                            CryptoUtils.addKnownPeerIp(this, peerIp);
+                            if (!peers.containsKey(peerIp)) {
+                                final String finalIp = peerIp;
+                                new Thread(() -> connectToPeer(finalIp)).start();
+                            }
                             continue;
                         }
 
@@ -1428,6 +1519,13 @@ public class ClipSyncService extends AccessibilityService {
                             }
                             final String finalIp = peerIp;
                             CryptoUtils.addKnownPeerIp(this, finalIp);
+
+                            // Reply back so peer also knows about us immediately
+                            try (DatagramSocket replySock = new DatagramSocket()) {
+                                byte[] reply = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this)).getBytes(StandardCharsets.UTF_8);
+                                replySock.send(new DatagramPacket(reply, reply.length, packet.getSocketAddress()));
+                            } catch (Exception ignored) {}
+
                             if (!peers.containsKey(finalIp)) {
                                 new Thread(() -> connectToPeer(finalIp)).start();
                             }

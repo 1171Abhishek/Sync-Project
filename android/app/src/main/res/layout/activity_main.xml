@@ -145,7 +145,7 @@
                 android:id="@+id/btnRefreshDevices"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Scan 🔄"
+                android:text="Refresh 🔄"
                 android:textSize="12sp"
                 android:textColor="@color/brand_primary"
                 android:clickable="true"
