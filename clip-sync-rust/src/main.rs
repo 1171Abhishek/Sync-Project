@@ -13,7 +13,7 @@ mod url_handler;
 mod utils;
 
 use crypto::CryptoManager;
-use discovery::{refresh_active_peers, switch_active_device, DiscoveryManager};
+use discovery::{probe_peer_live, refresh_active_peers, switch_active_device, DiscoveryManager};
 use file_server::{send_file_to_phone, start_file_server};
 use integration::ensure_desktop_integrations;
 use node::SyncNode;
@@ -23,8 +23,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 use types::{
-    get_active_peers_list, get_battery_file, get_selected_target, set_selected_target,
-    BatteryInfo, SyncMessage, BATTERY_FILE, FILE_PORT, TCP_PORT,
+    get_active_peers_file, get_active_peers_list, get_battery_file, get_peer_file,
+    get_selected_target, get_target_file, secure_write_file, set_selected_target, BatteryInfo,
+    SyncMessage, ACTIVE_PEERS_FILE, BATTERY_FILE, FILE_PORT, PEER_FILE, TARGET_FILE, TCP_PORT,
 };
 use url_handler::{send_clipboard_link_to_phone, send_url_to_phone};
 use utils::get_downloads_dir;
@@ -84,14 +85,35 @@ fn read_battery_info() -> Option<BatteryInfo> {
 
 async fn show_connected_devices(force_refresh: bool) {
     let mut active_peers = get_active_peers_list();
+
+    if !force_refresh && !active_peers.is_empty() {
+        let mut verified = Vec::new();
+        for peer in active_peers {
+            if probe_peer_live(&peer.ip, 300).await {
+                verified.push(peer);
+            }
+        }
+        active_peers = verified;
+        if active_peers.is_empty() {
+            let _ = secure_write_file(get_active_peers_file(), b"[]");
+            let _ = secure_write_file(ACTIVE_PEERS_FILE, b"[]");
+            let _ = std::fs::remove_file(get_peer_file());
+            let _ = std::fs::remove_file(PEER_FILE);
+            let _ = std::fs::remove_file(get_target_file());
+            let _ = std::fs::remove_file(TARGET_FILE);
+        }
+    }
+
     if force_refresh || active_peers.is_empty() {
-        println!("[Refresh] Scanning local Wi-Fi for ClipSync devices in real time...");
-        active_peers = refresh_active_peers(800).await;
+        if force_refresh {
+            println!("[Refresh] Scanning local Wi-Fi for ClipSync devices in real time...");
+            active_peers = refresh_active_peers(800).await;
+        }
     }
 
     if active_peers.is_empty() {
         println!("[Devices] Connected Devices: 0");
-        println!("   No active peers connected. Ensure devices are on the same Wi-Fi.");
+        println!("   No active peers connected. Ensure devices are on the same Wi-Fi and sync is turned ON.");
         return;
     }
 

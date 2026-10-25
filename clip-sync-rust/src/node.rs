@@ -295,6 +295,10 @@ impl SyncNode {
             }
 
             match msg.msg_type.as_deref().unwrap_or("") {
+                "disconnect" => {
+                    println!("[Disconnected] Peer {} went offline.", peer_ip);
+                    break;
+                }
                 "ping" | "pong" | "handshake" => continue,
                 "url" => {
                     handle_url(&msg, &node_ref.clipboard).await;
@@ -556,8 +560,10 @@ impl SyncNode {
                 if let Ok(data) = fs::read_to_string(PEER_FILE) {
                     let last_ip = data.trim().to_string();
                     if !last_ip.is_empty() && !is_local_ip(&last_ip) {
-                        let self_node = self.clone_node();
-                        self_node.connect_to_peer(last_ip).await;
+                        if crate::discovery::probe_peer_live(&last_ip, 300).await {
+                            let self_node = self.clone_node();
+                            self_node.connect_to_peer(last_ip).await;
+                        }
                     }
                 }
             }

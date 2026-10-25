@@ -4,7 +4,7 @@
 use crate::types::{
     get_active_peers_file, get_active_peers_list, get_peer_file, get_selected_target,
     get_target_file, secure_write_file, set_selected_target, PeerDevice, ACTIVE_PEERS_FILE,
-    FILE_PORT, PEER_FILE, TARGET_FILE, TCP_PORT, UDP_PORT,
+    PEER_FILE, TARGET_FILE, TCP_PORT, UDP_PORT,
 };
 use crate::utils::{cmd_exists, is_local_ip};
 use std::fs;
@@ -111,6 +111,25 @@ impl DiscoveryManager {
                             continue;
                         }
 
+                        if peer_id == "offline" {
+                            let mut list = get_active_peers_list();
+                            let orig_len = list.len();
+                            list.retain(|p| p.ip != remote_ip);
+                            if list.len() != orig_len {
+                                if let Ok(data) = serde_json::to_vec(&list) {
+                                    let _ = secure_write_file(get_active_peers_file(), &data);
+                                    let _ = secure_write_file(ACTIVE_PEERS_FILE, &data);
+                                }
+                                if list.is_empty() {
+                                    let _ = std::fs::remove_file(get_peer_file());
+                                    let _ = std::fs::remove_file(PEER_FILE);
+                                    let _ = std::fs::remove_file(get_target_file());
+                                    let _ = std::fs::remove_file(TARGET_FILE);
+                                }
+                            }
+                            continue;
+                        }
+
                         if peer_id != this_listener.device_id {
                             on_peer_discovered(remote_ip);
                         }
@@ -119,6 +138,34 @@ impl DiscoveryManager {
             }
         });
     }
+}
+
+pub async fn probe_peer_live(ip: &str, timeout_ms: u64) -> bool {
+    let clean_ip = ip.trim().trim_start_matches("::ffff:");
+    if is_local_ip(clean_ip) || clean_ip.is_empty() {
+        return false;
+    }
+    let addr = format!("{}:{}", clean_ip, TCP_PORT);
+    let Ok(Ok(mut stream)) = tokio::time::timeout(Duration::from_millis(timeout_ms), TcpStream::connect(&addr)).await else {
+        return false;
+    };
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let ping = b"{\"type\":\"ping\"}\n";
+    if stream.write_all(ping).await.is_err() {
+        return false;
+    }
+
+    let mut buf = [0u8; 512];
+    if let Ok(Ok(n)) = tokio::time::timeout(Duration::from_millis(timeout_ms), stream.read(&mut buf)).await {
+        if n > 0 {
+            let s = String::from_utf8_lossy(&buf[..n]);
+            if !s.contains("\"disconnect\"") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
@@ -130,12 +177,7 @@ pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
         if is_local_ip(&peer.ip) {
             continue;
         }
-        let addr_tcp = format!("{}:{}", peer.ip, TCP_PORT);
-        let addr_file = format!("{}:{}", peer.ip, FILE_PORT);
-        let is_alive = tokio::time::timeout(Duration::from_millis(300), TcpStream::connect(&addr_tcp)).await.is_ok_and(|r| r.is_ok())
-            || tokio::time::timeout(Duration::from_millis(300), TcpStream::connect(&addr_file)).await.is_ok_and(|r| r.is_ok());
-
-        if is_alive {
+        if probe_peer_live(&peer.ip, 300).await {
             seen_ips.insert(peer.ip.clone());
             discovered.push(peer);
         }
@@ -171,6 +213,9 @@ pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
                     if !is_local_ip(&ip) && !seen_ips.contains(&ip) {
                         let parts: Vec<&str> = payload.split(':').collect();
                         let dev_id = parts.first().filter(|s| !s.is_empty()).map(|s| s.to_string());
+                        if dev_id.as_deref() == Some("offline") {
+                            continue;
+                        }
                         let dev_name = parts.get(1).filter(|s| !s.is_empty()).map(|s| s.to_string()).or_else(|| Some("Phone".to_string()));
 
                         seen_ips.insert(ip.clone());
@@ -193,15 +238,11 @@ pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
         if !seen_ips.contains(&ip) && !is_local_ip(&ip) {
             let check_ip = ip.clone();
             check_handles.push(tokio::spawn(async move {
-                let addr_tcp = format!("{}:{}", check_ip, TCP_PORT);
-                if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_millis(300), TcpStream::connect(&addr_tcp)).await {
-                    return Some(check_ip);
+                if probe_peer_live(&check_ip, 300).await {
+                    Some(check_ip)
+                } else {
+                    None
                 }
-                let addr_file = format!("{}:{}", check_ip, FILE_PORT);
-                if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_millis(300), TcpStream::connect(&addr_file)).await {
-                    return Some(check_ip);
-                }
-                None
             }));
         }
     }

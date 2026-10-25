@@ -144,9 +144,7 @@ pub fn get_active_peers_list() -> Vec<PeerDevice> {
     for path in [get_active_peers_file(), PathBuf::from(ACTIVE_PEERS_FILE)] {
         if let Ok(data) = std::fs::read(&path) {
             if let Ok(peers) = serde_json::from_slice::<Vec<PeerDevice>>(&data) {
-                if !peers.is_empty() {
-                    return peers;
-                }
+                return peers;
             }
         }
     }

@@ -55,6 +55,7 @@ public class ClipSyncService extends AccessibilityService {
     private volatile long lastBroadcastedTime = 0;
     private static final ConcurrentHashMap<String, Socket> peers = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, String> peerNames = new ConcurrentHashMap<>();
+    private static final Set<Socket> activeSockets = java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
     private static volatile String lastPeerIp = null;
     private static volatile ClipSyncService instance = null;
     private ClipboardManager clipboard;
@@ -96,6 +97,11 @@ public class ClipSyncService extends AccessibilityService {
                .apply();
         } catch (Exception ignored) {}
 
+        if (paused) {
+            disconnectAllPeers();
+            sendOfflineBroadcast();
+        }
+
         ClipSyncService service = instance;
         if (service != null) {
             service.onSyncPauseStateChanged(paused);
@@ -106,6 +112,26 @@ public class ClipSyncService extends AccessibilityService {
             intent.setPackage(ctx.getPackageName());
             ctx.sendBroadcast(intent);
         } catch (Exception ignored) {}
+    }
+
+    public static void sendOfflineBroadcast() {
+        new Thread(() -> {
+            try (DatagramSocket socket = new DatagramSocket()) {
+                socket.setBroadcast(true);
+                String devId = (instance != null && instance.deviceId != null) ? instance.deviceId : "android";
+                byte[] beacon = ("CLIP_SYNC:offline:" + devId).getBytes(StandardCharsets.UTF_8);
+                for (InetAddress bcast : CryptoUtils.getBroadcastAddresses()) {
+                    try {
+                        socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
+                    } catch (Exception ignored) {}
+                }
+                for (String neighbor : CryptoUtils.getArpNeighbors()) {
+                    try {
+                        socket.send(new DatagramPacket(beacon, beacon.length, InetAddress.getByName(neighbor), UDP_PORT));
+                    } catch (Exception ignored) {}
+                }
+            } catch (Exception ignored) {}
+        }).start();
     }
 
     private void onSyncPauseStateChanged(boolean paused) {
@@ -127,12 +153,20 @@ public class ClipSyncService extends AccessibilityService {
         notifyPeerStateChanged();
     }
 
-    private void disconnectAllPeers() {
+    public static void disconnectAllPeers() {
         synchronized (peers) {
             for (java.util.Map.Entry<String, Socket> entry : peers.entrySet()) {
                 try {
                     Socket s = entry.getValue();
                     if (s != null && !s.isClosed()) {
+                        try {
+                            PrintWriter out = new PrintWriter(new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8), true);
+                            JSONObject offline = new JSONObject();
+                            offline.put("type", "disconnect");
+                            offline.put("action", "offline");
+                            out.println(offline.toString());
+                            out.flush();
+                        } catch (Exception ignored) {}
                         s.close();
                     }
                 } catch (Exception ignored) {}
@@ -141,6 +175,24 @@ public class ClipSyncService extends AccessibilityService {
             peerNames.clear();
             lastPeerIp = null;
         }
+
+        for (Socket s : activeSockets) {
+            try {
+                if (s != null && !s.isClosed()) {
+                    try {
+                        PrintWriter out = new PrintWriter(new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8), true);
+                        JSONObject offline = new JSONObject();
+                        offline.put("type", "disconnect");
+                        offline.put("action", "offline");
+                        out.println(offline.toString());
+                        out.flush();
+                    } catch (Exception ignored) {}
+                    s.close();
+                }
+            } catch (Exception ignored) {}
+        }
+        activeSockets.clear();
+        notifyPeerStateChanged();
     }
 
     public static void refreshDevices(Context ctx, Runnable onComplete) {
@@ -347,8 +399,25 @@ public class ClipSyncService extends AccessibilityService {
             Socket s = peers.remove(ip);
             peerNames.remove(ip);
             if (s != null) {
+                try {
+                    PrintWriter out = new PrintWriter(new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8), true);
+                    JSONObject offline = new JSONObject();
+                    offline.put("type", "disconnect");
+                    offline.put("action", "offline");
+                    out.println(offline.toString());
+                    out.flush();
+                } catch (Exception ignored) {}
                 try { s.close(); } catch (Exception ignored) {}
             }
+        }
+        for (Socket s : activeSockets) {
+            try {
+                String hostIp = s.getInetAddress() != null ? s.getInetAddress().getHostAddress() : null;
+                if (hostIp != null) hostIp = hostIp.replaceFirst("^::ffff:", "");
+                if (ip.equals(hostIp)) {
+                    s.close();
+                }
+            } catch (Exception ignored) {}
         }
         notifyPeerStateChanged();
     }
@@ -984,6 +1053,14 @@ public class ClipSyncService extends AccessibilityService {
                 while (true) {
                     Socket socket = server.accept();
                     if (isSyncPaused(this)) {
+                        try {
+                            PrintWriter out = new PrintWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
+                            JSONObject offline = new JSONObject();
+                            offline.put("type", "disconnect");
+                            offline.put("action", "offline");
+                            out.println(offline.toString());
+                            out.flush();
+                        } catch (Exception ignored) {}
                         try { socket.close(); } catch (Exception ignored) {}
                         continue;
                     }
@@ -1002,6 +1079,8 @@ public class ClipSyncService extends AccessibilityService {
             try { socket.close(); } catch (Exception ignored) {}
             return;
         }
+
+        activeSockets.add(socket);
 
         try {
             socket.setKeepAlive(true);
@@ -1032,7 +1111,7 @@ public class ClipSyncService extends AccessibilityService {
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
-            while ((line = reader.readLine()) != null) {
+            while (!isSyncPaused(this) && (line = reader.readLine()) != null) {
                 acquireWakeLockBriefly(3000);
                 JSONObject obj = new JSONObject(line);
                 String type = obj.optString("type", "clipboard");
@@ -1156,6 +1235,7 @@ public class ClipSyncService extends AccessibilityService {
             }
         } catch (Exception ignored) {
         } finally {
+            activeSockets.remove(socket);
             if (isPrimary) {
                 synchronized (peers) {
                     if (peers.get(hostIp) == socket) {
