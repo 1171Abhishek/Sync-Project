@@ -120,7 +120,7 @@ public class ClipSyncService extends AccessibilityService {
                 if (wifiLock != null && !wifiLock.isHeld()) wifiLock.acquire();
                 if (multicastLock != null && !multicastLock.isHeld()) multicastLock.acquire();
             } catch (Exception ignored) {}
-            new Thread(this::sendDiscoveryProbe).start();
+            sendDiscoveryProbe(this);
         }
         updateForegroundNotification();
         notifyPeerStateChanged();
@@ -142,16 +142,24 @@ public class ClipSyncService extends AccessibilityService {
         }
     }
 
-    private void sendDiscoveryProbe() {
-        try (DatagramSocket socket = new DatagramSocket()) {
-            socket.setBroadcast(true);
-            byte[] beacon = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this)).getBytes(StandardCharsets.UTF_8);
-            for (InetAddress bcast : CryptoUtils.getBroadcastAddresses()) {
-                try {
-                    socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
-                } catch (Exception ignored) {}
-            }
-        } catch (Exception ignored) {}
+    public static void sendDiscoveryProbe() {
+        sendDiscoveryProbe(instance);
+    }
+
+    public static void sendDiscoveryProbe(Context ctx) {
+        new Thread(() -> {
+            try (DatagramSocket socket = new DatagramSocket()) {
+                socket.setBroadcast(true);
+                String devId = (instance != null && instance.deviceId != null) ? instance.deviceId : "android-" + (System.currentTimeMillis() % 10000);
+                String devName = getDeviceName(ctx != null ? ctx : instance);
+                byte[] beacon = ("CLIP_SYNC:" + devId + ":" + devName).getBytes(StandardCharsets.UTF_8);
+                for (InetAddress bcast : CryptoUtils.getBroadcastAddresses()) {
+                    try {
+                        socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
+                    } catch (Exception ignored) {}
+                }
+            } catch (Exception ignored) {}
+        }).start();
     }
 
     public void acquireWakeLockBriefly(long millis) {
