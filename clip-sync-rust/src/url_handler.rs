@@ -234,8 +234,9 @@ pub async fn send_url_to_phone(url_str: &str, device_filter: Option<&str>) {
             continue;
         }
 
-        // Brief flush delay so OS TCP stack delivers before socket close
-        sleep(Duration::from_millis(150)).await;
+        let _ = stream.flush().await;
+        let _ = stream.shutdown().await;
+        sleep(Duration::from_millis(350)).await;
 
         println!(
             "[OK] Sent link to {} ({})! Opened in browser: {}",

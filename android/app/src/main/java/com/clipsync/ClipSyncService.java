@@ -1011,26 +1011,24 @@ public class ClipSyncService extends AccessibilityService {
         boolean isPrimary = false;
         synchronized (peers) {
             Socket existing = peers.get(hostIp);
-            if (existing != null && !existing.isClosed() && existing.isConnected()) {
-                // Connection already active with this peer; close redundant duplicate
-                try { socket.close(); } catch (Exception ignored) {}
-                return;
+            if (existing == null || existing.isClosed() || !existing.isConnected()) {
+                peers.put(hostIp, socket);
+                isPrimary = true;
+                lastPeerIp = hostIp;
+                CryptoUtils.addKnownPeerIp(this, hostIp);
             }
-            peers.put(hostIp, socket);
-            isPrimary = true;
-            lastPeerIp = hostIp;
-            CryptoUtils.addKnownPeerIp(this, hostIp);
         }
-        notifyPeerStateChanged();
-
-        try {
-            JSONObject handshake = new JSONObject();
-            handshake.put("type", "handshake");
-            handshake.put("device_id", deviceId);
-            handshake.put("device_name", getDeviceName(this));
-            sendJsonToPeer(socket, handshake);
-        } catch (Exception ignored) {}
-        sendCurrentBatteryStatus();
+        if (isPrimary) {
+            notifyPeerStateChanged();
+            try {
+                JSONObject handshake = new JSONObject();
+                handshake.put("type", "handshake");
+                handshake.put("device_id", deviceId);
+                handshake.put("device_name", getDeviceName(this));
+                sendJsonToPeer(socket, handshake);
+            } catch (Exception ignored) {}
+            sendCurrentBatteryStatus();
+        }
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
@@ -1148,6 +1146,11 @@ public class ClipSyncService extends AccessibilityService {
                                 }
                             } catch (Exception ignored) {}
                         });
+
+                        // If copied content is a web link, also display notification to easily open in browser
+                        if (clean.startsWith("http://") || clean.startsWith("https://")) {
+                            showUrlNotification(clean);
+                        }
                     }
                 }
             }
@@ -1416,6 +1419,7 @@ public class ClipSyncService extends AccessibilityService {
                     channelId, "ClipSync Web Links", NotificationManager.IMPORTANCE_HIGH);
                 channel.setDescription("Notifications when a web page is sent from PC");
                 channel.enableVibration(true);
+                channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
                 nm.createNotificationChannel(channel);
             }
 
@@ -1438,6 +1442,7 @@ public class ClipSyncService extends AccessibilityService {
                    .setContentTitle("🌐 Web Page Received")
                    .setContentText(targetUrl)
                    .setContentIntent(pi)
+                   .setFullScreenIntent(pi, true)
                    .setAutoCancel(true);
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
