@@ -162,6 +162,20 @@ public class ShareActivity extends Activity {
                 return;
             }
 
+            // 1. Direct send to active target device if set
+            String activeIp = ClipSyncService.getActiveTargetIp(this);
+            if (activeIp != null && !"ALL".equalsIgnoreCase(activeIp)) {
+                for (TargetDevice d : devices) {
+                    if (d.ip.equals(activeIp)) {
+                        mainHandler.post(() -> {
+                            Toast.makeText(getApplicationContext(), "Sending to " + d.name + "...", Toast.LENGTH_SHORT).show();
+                        });
+                        uploadFilesToIps(uris, Collections.singleton(d.ip), d.name);
+                        return;
+                    }
+                }
+            }
+
             // 1 device: fast direct path (zero extra clicks)
             if (devices.size() == 1) {
                 TargetDevice single = devices.get(0);
@@ -237,6 +251,20 @@ public class ShareActivity extends Activity {
                 return;
             }
 
+            // 1. Direct send to active target device if set
+            String activeIp = ClipSyncService.getActiveTargetIp(this);
+            if (activeIp != null && !"ALL".equalsIgnoreCase(activeIp)) {
+                for (TargetDevice d : devices) {
+                    if (d.ip.equals(activeIp)) {
+                        mainHandler.post(() -> {
+                            Toast.makeText(getApplicationContext(), "🌐 Sharing link with " + d.name + "...", Toast.LENGTH_SHORT).show();
+                        });
+                        executeSendUrl(url, text, Collections.singleton(d.ip), d.name);
+                        return;
+                    }
+                }
+            }
+
             // 1 device: fast direct path
             if (devices.size() == 1) {
                 TargetDevice single = devices.get(0);
@@ -304,6 +332,21 @@ public class ShareActivity extends Activity {
                     finish();
                 });
                 return;
+            }
+
+            // 1. Direct send to active target device if set
+            String activeIp = ClipSyncService.getActiveTargetIp(this);
+            if (activeIp != null && !"ALL".equalsIgnoreCase(activeIp)) {
+                for (TargetDevice d : devices) {
+                    if (d.ip.equals(activeIp)) {
+                        mainHandler.post(() -> {
+                            ClipSyncService.broadcastText(text, Collections.singleton(d.ip));
+                            Toast.makeText(getApplicationContext(), "✓ Copied to clipboard on " + d.name, Toast.LENGTH_SHORT).show();
+                            finish();
+                        });
+                        return;
+                    }
+                }
             }
 
             if (devices.size() == 1) {

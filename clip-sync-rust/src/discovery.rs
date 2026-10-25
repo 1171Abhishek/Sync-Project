@@ -2,8 +2,9 @@
 // Licensed under the GNU General Public License v3.0
 
 use crate::types::{
-    get_active_peers_file, get_active_peers_list, get_peer_file, secure_write_file,
-    PeerDevice, ACTIVE_PEERS_FILE, FILE_PORT, PEER_FILE, TCP_PORT, UDP_PORT,
+    get_active_peers_file, get_active_peers_list, get_peer_file, get_selected_target,
+    get_target_file, secure_write_file, set_selected_target, PeerDevice, ACTIVE_PEERS_FILE,
+    FILE_PORT, PEER_FILE, TARGET_FILE, TCP_PORT, UDP_PORT,
 };
 use crate::utils::{cmd_exists, is_local_ip};
 use std::fs;
@@ -224,11 +225,22 @@ pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
         let _ = secure_write_file(ACTIVE_PEERS_FILE, &data);
     }
     if !discovered.is_empty() {
-        let _ = secure_write_file(get_peer_file(), discovered[0].ip.as_bytes());
-        let _ = secure_write_file(PEER_FILE, discovered[0].ip.as_bytes());
+        let current_target = get_selected_target();
+        let target_to_save = if let Some(ref curr) = current_target {
+            if curr.eq_ignore_ascii_case("all") || discovered.iter().any(|p| p.ip == *curr) {
+                curr.clone()
+            } else {
+                discovered[0].ip.clone()
+            }
+        } else {
+            discovered[0].ip.clone()
+        };
+        let _ = set_selected_target(&target_to_save);
     } else {
         let _ = std::fs::remove_file(get_peer_file());
         let _ = std::fs::remove_file(PEER_FILE);
+        let _ = std::fs::remove_file(get_target_file());
+        let _ = std::fs::remove_file(TARGET_FILE);
     }
 
     discovered
@@ -238,6 +250,182 @@ pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
 pub async fn discover_phone_ip() -> Option<String> {
     let peers = refresh_active_peers(800).await;
     peers.first().map(|p| p.ip.clone())
+}
+
+pub async fn switch_active_device(target_arg: Option<&str>) {
+    let mut peers = get_active_peers_list();
+    if peers.is_empty() {
+        println!("[Refresh] Discovering ClipSync devices on local Wi-Fi...");
+        peers = refresh_active_peers(800).await;
+    }
+
+    if peers.is_empty() {
+        println!("[Switch] No devices found on the local network.");
+        println!("   Ensure your phone or PC has ClipSync running and is on the same Wi-Fi.");
+        return;
+    }
+
+    if let Some(arg) = target_arg {
+        let clean = arg.trim();
+        if clean.eq_ignore_ascii_case("all") {
+            let _ = set_selected_target("ALL");
+            println!("[Switch] ✓ Switched active target to: 🌐 All Connected Devices (Broadcast)");
+            return;
+        }
+
+        // Try numeric index (1-based)
+        if let Ok(num) = clean.parse::<usize>() {
+            if num >= 1 && num <= peers.len() {
+                let chosen = &peers[num - 1];
+                let _ = set_selected_target(&chosen.ip);
+                println!(
+                    "[Switch] ✓ Switched active device to: {} ({})",
+                    chosen.device_name.as_deref().unwrap_or("Device"),
+                    chosen.ip
+                );
+                return;
+            }
+        }
+
+        // Try matching by IP or Name
+        if let Some(matched) = peers.iter().find(|p| {
+            p.ip.eq_ignore_ascii_case(clean)
+                || p.device_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&clean.to_lowercase())
+        }) {
+            let _ = set_selected_target(&matched.ip);
+            println!(
+                "[Switch] ✓ Switched active device to: {} ({})",
+                matched.device_name.as_deref().unwrap_or("Device"),
+                matched.ip
+            );
+            return;
+        }
+
+        println!("[Error] Device '{}' not found among connected devices.", clean);
+        println!("Available devices:");
+        for (i, p) in peers.iter().enumerate() {
+            println!(
+                "   {}) {} ({})",
+                i + 1,
+                p.device_name.as_deref().unwrap_or("Device"),
+                p.ip
+            );
+        }
+        return;
+    }
+
+    // Interactive switch
+    let current_active = get_selected_target().unwrap_or_default();
+
+    if cmd_exists("zenity")
+        && (std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok())
+    {
+        let mut cmd = std::process::Command::new("zenity");
+        cmd.args([
+            "--list",
+            "--radiolist",
+            "--title=ClipSync - Switch Active Device",
+            "--text=Select active device to interact and sync with:",
+            "--column=Pick",
+            "--column=IP",
+            "--column=Device Name",
+        ]);
+
+        for p in &peers {
+            let is_sel = if p.ip == current_active { "TRUE" } else { "FALSE" };
+            cmd.arg(is_sel);
+            cmd.arg(&p.ip);
+            cmd.arg(p.device_name.as_deref().unwrap_or("Device"));
+        }
+        let is_all = if current_active.eq_ignore_ascii_case("all") { "TRUE" } else { "FALSE" };
+        cmd.arg(is_all);
+        cmd.arg("ALL");
+        cmd.arg("🌐 All Connected Devices");
+
+        cmd.args(["--print-column=2", "--hide-column=2", "--width=460", "--height=320"]);
+
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let chosen = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if chosen.eq_ignore_ascii_case("ALL") {
+                    let _ = set_selected_target("ALL");
+                    println!("[Switch] ✓ Switched active target to: 🌐 All Connected Devices");
+                    return;
+                }
+                if let Some(selected) = peers.iter().find(|p| p.ip == chosen) {
+                    let _ = set_selected_target(&selected.ip);
+                    println!(
+                        "[Switch] ✓ Switched active device to: {} ({})",
+                        selected.device_name.as_deref().unwrap_or("Device"),
+                        selected.ip
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    // CLI fallback
+    println!("\n[ClipSync] Select Active Device:");
+    for (i, p) in peers.iter().enumerate() {
+        let is_active = if p.ip == current_active { " [ACTIVE]" } else { "" };
+        println!(
+            "  {}) {} ({}){}",
+            i + 1,
+            p.device_name.as_deref().unwrap_or("Device"),
+            p.ip,
+            is_active
+        );
+    }
+    let all_active = if current_active.eq_ignore_ascii_case("all") { " [ACTIVE]" } else { "" };
+    println!("  {}) 🌐 All Devices{}", peers.len() + 1, all_active);
+    print!("Choose device [1-{}]: ", peers.len() + 1);
+    let _ = io::stdout().flush();
+
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).is_ok() {
+        let choice = line.trim();
+        if let Ok(num) = choice.parse::<usize>() {
+            if num >= 1 && num <= peers.len() {
+                let chosen = &peers[num - 1];
+                let _ = set_selected_target(&chosen.ip);
+                println!(
+                    "[Switch] ✓ Switched active device to: {} ({})",
+                    chosen.device_name.as_deref().unwrap_or("Device"),
+                    chosen.ip
+                );
+                return;
+            } else if num == peers.len() + 1 {
+                let _ = set_selected_target("ALL");
+                println!("[Switch] ✓ Switched active target to: 🌐 All Connected Devices");
+                return;
+            }
+        }
+        if choice.eq_ignore_ascii_case("all") {
+            let _ = set_selected_target("ALL");
+            println!("[Switch] ✓ Switched active target to: 🌐 All Connected Devices");
+            return;
+        }
+        if let Some(matched) = peers.iter().find(|p| {
+            p.ip.eq_ignore_ascii_case(choice)
+                || p.device_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&choice.to_lowercase())
+        }) {
+            let _ = set_selected_target(&matched.ip);
+            println!(
+                "[Switch] ✓ Switched active device to: {} ({})",
+                matched.device_name.as_deref().unwrap_or("Device"),
+                matched.ip
+            );
+        }
+    }
 }
 
 pub async fn select_target_devices(filter: Option<&str>) -> Vec<PeerDevice> {
@@ -278,106 +466,20 @@ pub async fn select_target_devices(filter: Option<&str>) -> Vec<PeerDevice> {
         }
     }
 
-    loop {
-        // 2. Exactly 1 device: direct fast path (no prompts, zero extra friction)
-        if peers.len() == 1 {
+    // 2. Active selected device
+    if let Some(target) = get_selected_target() {
+        let clean = target.trim();
+        if clean.eq_ignore_ascii_case("all") {
             return peers;
         }
-
-        // 3. Multiple devices connected: interactive choice
-        if cmd_exists("zenity")
-            && (std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok())
-        {
-            let mut cmd = std::process::Command::new("zenity");
-            cmd.args([
-                "--list",
-                "--radiolist",
-                "--title=ClipSync - Choose Target Device",
-                "--text=Multiple devices connected. Select target device:",
-                "--column=Pick",
-                "--column=IP",
-                "--column=Device Name",
-            ]);
-
-            for (i, p) in peers.iter().enumerate() {
-                cmd.arg(if i == 0 { "TRUE" } else { "FALSE" });
-                cmd.arg(&p.ip);
-                cmd.arg(p.device_name.as_deref().unwrap_or("Phone"));
-            }
-            // Add "All Devices" option
-            cmd.arg("FALSE");
-            cmd.arg("ALL");
-            cmd.arg("🌐 All Connected Devices");
-
-            // Add real-time "Refresh" option
-            cmd.arg("FALSE");
-            cmd.arg("REFRESH");
-            cmd.arg("🔄 Refresh Devices (Scan Now)");
-
-            cmd.args(["--print-column=2", "--hide-column=2", "--width=460", "--height=320"]);
-
-            if let Ok(output) = cmd.output() {
-                if output.status.success() {
-                    let chosen = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if chosen.eq_ignore_ascii_case("ALL") {
-                        return peers;
-                    }
-                    if chosen.eq_ignore_ascii_case("REFRESH") {
-                        println!("[Refresh] Rescanning network for devices...");
-                        peers = refresh_active_peers(800).await;
-                        continue;
-                    }
-                    if let Some(selected) = peers.iter().find(|p| p.ip == chosen) {
-                        return vec![selected.clone()];
-                    }
-                } else {
-                    // User closed or cancelled dialog explicitly
-                    return Vec::new();
-                }
-            }
+        if let Some(active) = peers.iter().find(|p| p.ip == clean) {
+            return vec![active.clone()];
         }
-
-        // CLI fallback if Zenity is not available, fails, or pure terminal
-        println!("\n[ClipSync] Multiple devices connected:");
-        for (i, p) in peers.iter().enumerate() {
-            println!(
-                "  {}) {} ({})",
-                i + 1,
-                p.device_name.as_deref().unwrap_or("Phone"),
-                p.ip
-            );
-        }
-        println!("  {}) 🌐 All Devices", peers.len() + 1);
-        println!("  {}) 🔄 Refresh Devices (Scan Now)", peers.len() + 2);
-        print!("Select device [1-{}, or 'r' to refresh]: ", peers.len() + 2);
-        let _ = io::stdout().flush();
-
-        let mut line = String::new();
-        if io::stdin().read_line(&mut line).is_ok() {
-            let choice = line.trim();
-            if choice.eq_ignore_ascii_case("r") || choice.eq_ignore_ascii_case("refresh") {
-                println!("[Refresh] Rescanning network for devices...");
-                peers = refresh_active_peers(800).await;
-                continue;
-            }
-            if let Ok(num) = choice.parse::<usize>() {
-                if num >= 1 && num <= peers.len() {
-                    return vec![peers[num - 1].clone()];
-                } else if num == peers.len() + 1 {
-                    return peers;
-                } else if num == peers.len() + 2 {
-                    println!("[Refresh] Rescanning network for devices...");
-                    peers = refresh_active_peers(800).await;
-                    continue;
-                }
-            }
-            if choice.eq_ignore_ascii_case("all") {
-                return peers;
-            }
-        }
-
-        // Default to first peer if no input
-        return vec![peers[0].clone()];
     }
+
+    // 3. Default to first connected device
+    let first = peers[0].clone();
+    let _ = set_selected_target(&first.ip);
+    vec![first]
 }
 

@@ -10,6 +10,7 @@ pub const TCP_PORT: u16 = 9877;
 pub const FILE_PORT: u16 = 9878;
 
 pub const PEER_FILE: &str = "/tmp/clipsync_peer";
+pub const TARGET_FILE: &str = "/tmp/clipsync_target";
 pub const ACTIVE_PEERS_FILE: &str = "/tmp/clipsync_active_peers.json";
 pub const BATTERY_FILE: &str = "/tmp/clipsync_battery";
 
@@ -33,6 +34,14 @@ pub fn get_peer_file() -> PathBuf {
         return secure;
     }
     PathBuf::from(PEER_FILE)
+}
+
+pub fn get_target_file() -> PathBuf {
+    let secure = get_runtime_dir().join("clipsync_target");
+    if secure.exists() {
+        return secure;
+    }
+    PathBuf::from(TARGET_FILE)
 }
 
 pub fn get_active_peers_file() -> PathBuf {
@@ -156,6 +165,33 @@ pub fn get_active_peers_list() -> Vec<PeerDevice> {
     }
 
     Vec::new()
+}
+
+pub fn get_selected_target() -> Option<String> {
+    for path in [
+        get_target_file(),
+        PathBuf::from(TARGET_FILE),
+        get_peer_file(),
+        PathBuf::from(PEER_FILE),
+    ] {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            let target = data.trim().to_string();
+            if !target.is_empty() {
+                return Some(target);
+            }
+        }
+    }
+    None
+}
+
+pub fn set_selected_target(target: &str) -> std::io::Result<()> {
+    secure_write_file(get_target_file(), target.as_bytes())?;
+    secure_write_file(TARGET_FILE, target.as_bytes())?;
+    if !target.eq_ignore_ascii_case("all") {
+        let _ = secure_write_file(get_peer_file(), target.as_bytes());
+        let _ = secure_write_file(PEER_FILE, target.as_bytes());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -275,20 +275,37 @@ public class MainActivity extends AppCompatActivity {
             builder.setNegativeButton("Close", null);
         } else {
             java.util.List<Map.Entry<String, String>> entries = new java.util.ArrayList<>(peersMap.entrySet());
-            String[] items = new String[entries.size()];
+            String activeIp = ClipSyncService.getActiveTargetIp(this);
+            int totalItems = entries.size() + (entries.size() > 1 ? 1 : 0);
+            String[] items = new String[totalItems];
+
             for (int i = 0; i < entries.size(); i++) {
                 Map.Entry<String, String> entry = entries.get(i);
                 String name = entry.getValue();
                 String ip = entry.getKey();
-                String lower = name.toLowerCase();
-                String icon = (lower.contains("linux") || lower.contains("pc") || lower.contains("desktop") || lower.contains("laptop") || lower.contains("computer")) ? "💻 " : "📱 ";
-                items[i] = icon + name + "\n" + ip + " • Live";
+                boolean isActive = ip.equals(activeIp);
+                String icon = isDesktopName(name) ? "💻 " : "📱 ";
+                String statusBadge = isActive ? "✓ [ACTIVE] " : "   [Connect] ";
+                items[i] = statusBadge + icon + name + "\n" + ip + " • Tap to select/manage";
+            }
+
+            if (entries.size() > 1) {
+                boolean isAll = "ALL".equalsIgnoreCase(activeIp);
+                String statusBadge = isAll ? "✓ [ACTIVE] " : "   [Connect] ";
+                items[entries.size()] = statusBadge + "🌐 All Connected Devices\nBroadcast to all connected peers";
             }
 
             builder.setItems(items, (dialog, which) -> {
-                if (which >= 0 && which < entries.size()) {
+                if (which < entries.size()) {
                     Map.Entry<String, String> selected = entries.get(which);
+                    ClipSyncService.setActiveTargetIp(this, selected.getKey());
+                    Toast.makeText(this, "✓ Active device set to " + selected.getValue(), Toast.LENGTH_SHORT).show();
+                    updateUI();
                     showDeviceActionDialog(selected.getKey(), selected.getValue());
+                } else {
+                    ClipSyncService.setActiveTargetIp(this, "ALL");
+                    Toast.makeText(this, "✓ Active target set to All Devices", Toast.LENGTH_SHORT).show();
+                    updateUI();
                 }
             });
             builder.setPositiveButton("🔄 Refresh", (dialog, which) -> {
@@ -305,7 +322,11 @@ public class MainActivity extends AppCompatActivity {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle(peerName);
 
+        String activeIp = ClipSyncService.getActiveTargetIp(this);
+        boolean isActive = peerIp.equals(activeIp);
+
         String[] actions = new String[] {
+            isActive ? "✓ Currently Active Target" : "⭐ Connect & Set as Active Device",
             "📤 Send File to this Device",
             "📋 Send Current Clipboard",
             "🔌 Disconnect Device"
@@ -313,17 +334,14 @@ public class MainActivity extends AppCompatActivity {
 
         builder.setItems(actions, (dialog, which) -> {
             if (which == 0) {
+                ClipSyncService.setActiveTargetIp(this, peerIp);
+                Toast.makeText(this, "✓ Connected to " + peerName, Toast.LENGTH_SHORT).show();
+                updateUI();
+            } else if (which == 1) {
                 pendingTargetIp = peerIp;
                 pendingTargetName = peerName;
-                try {
-                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                    intent.addCategory(Intent.CATEGORY_OPENABLE);
-                    intent.setType("*/*");
-                    startActivityForResult(intent, REQUEST_CODE_PICK_FILE);
-                } catch (Exception e) {
-                    Toast.makeText(this, "Could not open file picker", Toast.LENGTH_SHORT).show();
-                }
-            } else if (which == 1) {
+                launchFilePicker();
+            } else if (which == 2) {
                 android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
                 if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip() != null && cm.getPrimaryClip().getItemCount() > 0) {
                     CharSequence cs = cm.getPrimaryClip().getItemAt(0).getText();
@@ -336,14 +354,14 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     Toast.makeText(this, "Clipboard is empty", Toast.LENGTH_SHORT).show();
                 }
-            } else if (which == 2) {
+            } else if (which == 3) {
                 ClipSyncService.disconnectPeer(peerIp);
                 Toast.makeText(this, "Disconnected from " + peerName, Toast.LENGTH_SHORT).show();
                 updateUI();
             }
         });
 
-        builder.setNegativeButton("Cancel", null);
+        builder.setNegativeButton("Close", null);
         builder.show();
     }
 
@@ -368,6 +386,15 @@ public class MainActivity extends AppCompatActivity {
         Map<String, String> peersMap = ClipSyncService.getConnectedPeersMap();
         if (peersMap.isEmpty()) {
             Toast.makeText(this, "No devices connected. Tap 'Scan' to discover peers.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // Direct send to active target device
+        String activeIp = ClipSyncService.getActiveTargetIp(this);
+        if (activeIp != null && !"ALL".equalsIgnoreCase(activeIp) && peersMap.containsKey(activeIp)) {
+            pendingTargetIp = activeIp;
+            pendingTargetName = peersMap.get(activeIp);
+            launchFilePicker();
             return;
         }
 
@@ -431,10 +458,24 @@ public class MainActivity extends AppCompatActivity {
         }
         String text = cs.toString();
 
+        // Direct send to active target device
+        String activeIp = ClipSyncService.getActiveTargetIp(this);
+        if (activeIp != null && !"ALL".equalsIgnoreCase(activeIp) && peersMap.containsKey(activeIp)) {
+            ClipSyncService.broadcastText(text, java.util.Collections.singleton(activeIp));
+            Toast.makeText(this, "✓ Clipboard sent to " + peersMap.get(activeIp), Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         if (peersMap.size() == 1) {
             Map.Entry<String, String> single = peersMap.entrySet().iterator().next();
             ClipSyncService.broadcastText(text, java.util.Collections.singleton(single.getKey()));
             Toast.makeText(this, "✓ Sent clipboard to " + single.getValue(), Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if ("ALL".equalsIgnoreCase(activeIp)) {
+            ClipSyncService.broadcastText(text, null);
+            Toast.makeText(this, "✓ Clipboard sent to all " + peersMap.size() + " devices", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -614,18 +655,28 @@ public class MainActivity extends AppCompatActivity {
         Map<String, String> peersMap = ClipSyncService.getConnectedPeersMap();
         if (tvDeviceCardTitle != null && tvDeviceCardSubtitle != null) {
             if (peersMap.isEmpty()) {
-                tvDeviceCardTitle.setText("Choose Target Device");
-                tvDeviceCardSubtitle.setText("No devices online • Tap 'Scan' or 'Select' to connect");
-            } else if (peersMap.size() == 1) {
-                Map.Entry<String, String> single = peersMap.entrySet().iterator().next();
-                String icon = isDesktopName(single.getValue()) ? "💻 " : "📱 ";
-                tvDeviceCardTitle.setText("Target: " + icon + single.getValue());
-                tvDeviceCardSubtitle.setText(single.getKey() + " • Ready for transfer");
+                tvDeviceCardTitle.setText("No Devices Connected");
+                tvDeviceCardSubtitle.setText("Tap 'Refresh' or ensure devices are on Wi-Fi");
+                if (btnChooseDevice != null) btnChooseDevice.setText("Connect");
             } else {
-                tvDeviceCardTitle.setText("Target: " + peersMap.size() + " Devices Available");
-                java.util.List<String> names = new java.util.ArrayList<>();
-                for (String n : peersMap.values()) names.add(n);
-                tvDeviceCardSubtitle.setText(android.text.TextUtils.join(", ", names) + " • Tap to choose");
+                String activeIp = ClipSyncService.getActiveTargetIp(this);
+                if ("ALL".equalsIgnoreCase(activeIp)) {
+                    tvDeviceCardTitle.setText("Active: 🌐 All Devices (" + peersMap.size() + ")");
+                    tvDeviceCardSubtitle.setText("Broadcast to all devices • Tap 'Switch' to change");
+                } else if (activeIp != null && peersMap.containsKey(activeIp)) {
+                    String activeName = peersMap.get(activeIp);
+                    String icon = isDesktopName(activeName) ? "💻 " : "📱 ";
+                    tvDeviceCardTitle.setText("Active: " + icon + activeName);
+                    tvDeviceCardSubtitle.setText(activeIp + " • Tap 'Switch' to change");
+                } else {
+                    Map.Entry<String, String> first = peersMap.entrySet().iterator().next();
+                    String icon = isDesktopName(first.getValue()) ? "💻 " : "📱 ";
+                    tvDeviceCardTitle.setText("Active: " + icon + first.getValue());
+                    tvDeviceCardSubtitle.setText(first.getKey() + " • Tap 'Switch' to change");
+                }
+                if (btnChooseDevice != null) {
+                    btnChooseDevice.setText(peersMap.size() > 1 ? "Switch" : "Manage");
+                }
             }
         }
     }

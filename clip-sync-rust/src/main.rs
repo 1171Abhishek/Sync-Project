@@ -13,7 +13,7 @@ mod url_handler;
 mod utils;
 
 use crypto::CryptoManager;
-use discovery::{refresh_active_peers, DiscoveryManager};
+use discovery::{refresh_active_peers, switch_active_device, DiscoveryManager};
 use file_server::{send_file_to_phone, start_file_server};
 use integration::ensure_desktop_integrations;
 use node::SyncNode;
@@ -23,8 +23,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 use types::{
-    get_active_peers_list, get_battery_file, BatteryInfo, SyncMessage, BATTERY_FILE, FILE_PORT,
-    TCP_PORT,
+    get_active_peers_list, get_battery_file, get_selected_target, set_selected_target,
+    BatteryInfo, SyncMessage, BATTERY_FILE, FILE_PORT, TCP_PORT,
 };
 use url_handler::{send_clipboard_link_to_phone, send_url_to_phone};
 use utils::get_downloads_dir;
@@ -95,10 +95,27 @@ async fn show_connected_devices(force_refresh: bool) {
         return;
     }
 
+    let current_target = get_selected_target().unwrap_or_else(|| {
+        let first = active_peers[0].ip.clone();
+        let _ = set_selected_target(&first);
+        first
+    });
+
     println!("[Devices] Connected Devices ({}):", active_peers.len());
     for (i, peer) in active_peers.iter().enumerate() {
         let name = peer.device_name.as_deref().unwrap_or("Phone");
-        println!("   {}. * {} ({}) [Live]", i + 1, name, peer.ip);
+        let is_active = if peer.ip == current_target || current_target.eq_ignore_ascii_case("all") {
+            " [ACTIVE]"
+        } else {
+            ""
+        };
+        let radio = if peer.ip == current_target { "(*)" } else { "( )" };
+        println!("   {} {} {} ({}) [Live]{}", i + 1, radio, name, peer.ip, is_active);
+    }
+
+    if active_peers.len() > 1 {
+        println!("\nTo switch active device, run:");
+        println!("   clip-sync switch <name_or_number>");
     }
 }
 
@@ -264,6 +281,12 @@ async fn main() {
             return;
         }
 
+        if arg == "switch" || arg == "use" || arg == "connect" {
+            let target = args.get(2).map(|s| s.as_str());
+            switch_active_device(target).await;
+            return;
+        }
+
         if arg == "test-battery" {
             run_battery_test().await;
             return;
@@ -339,7 +362,8 @@ async fn main() {
             println!("  clip-sync                 Start background daemon");
             println!("  clip-sync version         Print ClipSync version");
             println!("  clip-sync battery         Check connected phone battery percentage & status");
-            println!("  clip-sync devices [-r]    Show active connected peers (optional -r to force refresh)");
+            println!("  clip-sync devices [-r]    Show active connected peers and current target");
+            println!("  clip-sync switch [name]   Switch active device to interact with (e.g. clip-sync switch Pixel)");
             println!("  clip-sync refresh         Scan local Wi-Fi and refresh connected devices in real time");
             println!("  clip-sync test-battery    Simulate phone low battery & full charge alerts");
             println!("  clip-sync test-call [name] Simulate incoming call, auto-dismiss, and missed call");

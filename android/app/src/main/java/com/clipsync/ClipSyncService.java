@@ -352,6 +352,38 @@ public class ClipSyncService extends AccessibilityService {
         notifyPeerStateChanged();
     }
 
+    public static String getActiveTargetIp(Context ctx) {
+        if (ctx == null && instance != null) ctx = instance;
+        if (ctx != null) {
+            try {
+                String target = ctx.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE)
+                                   .getString("active_target_ip", null);
+                if (target != null && !target.isEmpty()) {
+                    if ("ALL".equalsIgnoreCase(target)) return "ALL";
+                    if (peers.containsKey(target)) return target;
+                }
+            } catch (Exception ignored) {}
+        }
+        // Fall back to first connected peer if available
+        if (!peers.isEmpty()) {
+            return peers.keySet().iterator().next();
+        }
+        return null;
+    }
+
+    public static void setActiveTargetIp(Context ctx, String targetIp) {
+        if (ctx == null && instance != null) ctx = instance;
+        if (ctx != null) {
+            try {
+                ctx.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE)
+                   .edit()
+                   .putString("active_target_ip", targetIp)
+                   .apply();
+            } catch (Exception ignored) {}
+        }
+        notifyPeerStateChanged();
+    }
+
     public static void broadcastText(String text) {
         broadcastText(text, null);
     }
