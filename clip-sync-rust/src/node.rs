@@ -35,11 +35,11 @@ pub struct SyncNode {
     pub last_received: Arc<Mutex<String>>,
 
     // Battery state
-    last_battery_level: Arc<Mutex<i32>>,
-    last_battery_charge: Arc<Mutex<bool>>,
+    pub last_battery_level: Arc<Mutex<i32>>,
+    pub last_battery_charge: Arc<Mutex<bool>>,
 
     // Call tracking
-    active_call_notif_id: Arc<Mutex<u32>>,
+    pub active_call_notif_id: Arc<Mutex<u32>>,
 }
 
 impl SyncNode {

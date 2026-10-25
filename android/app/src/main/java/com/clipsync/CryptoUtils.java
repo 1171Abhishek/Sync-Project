@@ -5,9 +5,14 @@ import android.content.SharedPreferences;
 import android.util.Base64;
 import java.nio.charset.StandardCharsets;
 import java.net.InetAddress;
+import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.GCMParameterSpec;
@@ -160,5 +165,62 @@ public class CryptoUtils {
             }
         } catch (Exception ignored) {}
         return false;
+    }
+
+    public static List<InetAddress> getBroadcastAddresses() {
+        List<InetAddress> broadcastList = new ArrayList<>();
+        try {
+            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                    InetAddress bcast = ia.getBroadcast();
+                    if (bcast != null && !broadcastList.contains(bcast)) {
+                        broadcastList.add(bcast);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        try {
+            InetAddress global = InetAddress.getByName("255.255.255.255");
+            if (!broadcastList.contains(global)) {
+                broadcastList.add(global);
+            }
+        } catch (Exception ignored) {}
+        return broadcastList;
+    }
+
+    public static Set<String> getKnownPeerIps(Context ctx) {
+        Set<String> result = new HashSet<>();
+        if (ctx == null) return result;
+        try {
+            SharedPreferences prefs = ctx.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
+            String lastIp = prefs.getString("last_peer_ip", null);
+            if (lastIp != null && !lastIp.isEmpty() && !isLocalIp(lastIp)) {
+                result.add(lastIp.trim());
+            }
+            Set<String> set = prefs.getStringSet("known_peer_ips", null);
+            if (set != null) {
+                for (String ip : set) {
+                    if (ip != null && !ip.isEmpty() && !isLocalIp(ip)) {
+                        result.add(ip.trim());
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return result;
+    }
+
+    public static void addKnownPeerIp(Context ctx, String ip) {
+        if (ctx == null || ip == null || ip.isEmpty() || isLocalIp(ip)) return;
+        try {
+            String clean = ip.trim().replaceFirst("^::ffff:", "");
+            SharedPreferences prefs = ctx.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
+            Set<String> set = new HashSet<>(getKnownPeerIps(ctx));
+            set.add(clean);
+            prefs.edit()
+                 .putString("last_peer_ip", clean)
+                 .putStringSet("known_peer_ips", set)
+                 .apply();
+        } catch (Exception ignored) {}
     }
 }

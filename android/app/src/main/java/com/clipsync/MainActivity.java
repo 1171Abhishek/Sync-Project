@@ -189,7 +189,7 @@ public class MainActivity extends AppCompatActivity {
         builder.setTitle("Connected Devices (" + peersMap.size() + ")");
 
         if (peersMap.isEmpty()) {
-            builder.setMessage("No devices currently connected.\n\nEnsure your PC is running ClipSync and connected to the same Wi-Fi network.");
+            builder.setMessage("No devices currently connected.\n\nEnsure your PC or phone is running ClipSync and connected to the same Wi-Fi network.");
         } else {
             StringBuilder sb = new StringBuilder();
             int index = 1;
@@ -314,7 +314,7 @@ public class MainActivity extends AppCompatActivity {
                 String peerIp = ClipSyncService.getConnectedPeerSummary();
 
                 if (connected && peerIp != null && !peerIp.isEmpty()) {
-                    // State 2: 🟢 Connected to PC in real time!
+                    // State 2: 🟢 Connected in real time!
                     cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_success_bg));
                     cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_success_border));
                     ivHeroIcon.setImageResource(R.drawable.ic_check);
@@ -323,19 +323,24 @@ public class MainActivity extends AppCompatActivity {
                         tvHeroTitle.setText("🟢 Connected to " + peerCount + " Devices");
                         tvHeroSubtitle.setText("Live mesh active • " + peerIp);
                     } else {
-                        tvHeroTitle.setText("🟢 Connected to PC");
+                        Map<String, String> currentPeers = ClipSyncService.getConnectedPeersMap();
+                        String peerName = null;
+                        if (!currentPeers.isEmpty()) {
+                            peerName = currentPeers.values().iterator().next();
+                        }
+                        tvHeroTitle.setText("🟢 Connected to " + (peerName != null && !peerName.isEmpty() ? peerName : "Device"));
                         tvHeroSubtitle.setText("Live sync active • " + peerIp);
                     }
                     tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_success_text));
                 } else {
-                    // State 3: 📡 Searching for PC on Wi-Fi
+                    // State 3: 📡 Searching for devices on Wi-Fi
                     cardHeroStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_searching_bg));
                     cardHeroStatus.setStrokeColor(ContextCompat.getColor(this, R.color.status_searching_border));
                     ivHeroIcon.setImageResource(R.drawable.ic_bolt);
                     ivHeroIcon.setColorFilter(ContextCompat.getColor(this, R.color.status_searching_text));
-                    tvHeroTitle.setText("📡 Searching for PC...");
+                    tvHeroTitle.setText("📡 Searching for Devices...");
                     tvHeroTitle.setTextColor(ContextCompat.getColor(this, R.color.status_searching_text));
-                    tvHeroSubtitle.setText("Waiting for Linux daemon on local Wi-Fi");
+                    tvHeroSubtitle.setText("Waiting for PC or phone on local Wi-Fi");
                     tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_searching_text));
                 }
             }

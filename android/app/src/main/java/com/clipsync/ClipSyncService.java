@@ -127,24 +127,30 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void disconnectAllPeers() {
-        for (java.util.Map.Entry<String, Socket> entry : peers.entrySet()) {
-            try {
-                Socket s = entry.getValue();
-                if (s != null && !s.isClosed()) {
-                    s.close();
-                }
-            } catch (Exception ignored) {}
+        synchronized (peers) {
+            for (java.util.Map.Entry<String, Socket> entry : peers.entrySet()) {
+                try {
+                    Socket s = entry.getValue();
+                    if (s != null && !s.isClosed()) {
+                        s.close();
+                    }
+                } catch (Exception ignored) {}
+            }
+            peers.clear();
+            peerNames.clear();
+            lastPeerIp = null;
         }
-        peers.clear();
-        lastPeerIp = null;
     }
 
     private void sendDiscoveryProbe() {
         try (DatagramSocket socket = new DatagramSocket()) {
             socket.setBroadcast(true);
             byte[] beacon = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this)).getBytes(StandardCharsets.UTF_8);
-            InetAddress bcast = InetAddress.getByName("255.255.255.255");
-            socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
+            for (InetAddress bcast : CryptoUtils.getBroadcastAddresses()) {
+                try {
+                    socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
+                } catch (Exception ignored) {}
+            }
         } catch (Exception ignored) {}
     }
 
@@ -207,7 +213,7 @@ public class ClipSyncService extends AccessibilityService {
         Map<String, String> map = new LinkedHashMap<>();
         for (String ip : peers.keySet()) {
             String name = peerNames.get(ip);
-            map.put(ip, name != null && !name.isEmpty() ? name : "Linux PC");
+            map.put(ip, name != null && !name.isEmpty() ? name : "Device (" + ip + ")");
         }
         return map;
     }
@@ -291,36 +297,88 @@ public class ClipSyncService extends AccessibilityService {
                 }
                 byte[] bytes = wireString.getBytes(StandardCharsets.UTF_8);
 
-                // If currently no peers connected, try to reconnect to last known peer IP
+                // If currently no peers connected, try to reconnect to known peer IPs
                 if (peers.isEmpty() && context != null) {
-                    try {
-                        SharedPreferences prefs = context.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
-                        String lastIp = prefs.getString("last_peer_ip", null);
-                        if (lastIp != null && !lastIp.isEmpty() && !CryptoUtils.isLocalIp(lastIp)) {
+                    for (String knownIp : CryptoUtils.getKnownPeerIps(context)) {
+                        try {
                             Socket s = new Socket();
-                            s.connect(new InetSocketAddress(lastIp, TCP_PORT), 2000);
+                            s.connect(new InetSocketAddress(knownIp, TCP_PORT), 1500);
                             s.setKeepAlive(true);
                             s.setTcpNoDelay(true);
-                            peers.put(lastIp, s);
-                            if (instance != null) {
-                                new Thread(() -> instance.handlePeer(s)).start();
+                            synchronized (peers) {
+                                if (!peers.containsKey(knownIp)) {
+                                    peers.put(knownIp, s);
+                                    if (instance != null) {
+                                        new Thread(() -> instance.handlePeer(s)).start();
+                                    }
+                                } else {
+                                    try { s.close(); } catch (Exception ignored) {}
+                                }
                             }
-                        }
-                    } catch (Exception ignored) {}
+                        } catch (Exception ignored) {}
+                    }
                 }
 
-                for (String hostIp : peers.keySet()) {
-                    Socket socket = peers.get(hostIp);
+                List<Map.Entry<String, Socket>> activeEntries;
+                synchronized (peers) {
+                    activeEntries = new ArrayList<>(peers.entrySet());
+                }
+                for (Map.Entry<String, Socket> entry : activeEntries) {
+                    String hostIp = entry.getKey();
+                    Socket socket = entry.getValue();
                     if (socket != null && !socket.isClosed()) {
                         try {
                             OutputStream out = socket.getOutputStream();
                             out.write(bytes);
                             out.flush();
                         } catch (Exception e) {
-                            peers.remove(hostIp, socket);
+                            synchronized (peers) {
+                                if (peers.get(hostIp) == socket) {
+                                    peers.remove(hostIp);
+                                    peerNames.remove(hostIp);
+                                    notifyPeerStateChanged();
+                                }
+                            }
+                            try { socket.close(); } catch (Exception ignored) {}
                         }
                     }
                 }
+            } catch (Exception ignored) {}
+        }).start();
+    }
+
+    public static void sendJsonToPeer(Socket socket, JSONObject json) {
+        if (socket == null || socket.isClosed()) return;
+        new Thread(() -> {
+            try {
+                Context context = instance;
+                String devId = (instance != null && instance.deviceId != null) ? instance.deviceId : "android-" + (System.currentTimeMillis() % 10000);
+                if (!json.has("device_id")) {
+                    json.put("device_id", devId);
+                }
+                if (!json.has("device_name")) {
+                    json.put("device_name", getDeviceName(context));
+                }
+
+                byte[] secretKey = context != null ? CryptoUtils.getSecretKey(context) : null;
+                String wireString;
+                if (secretKey != null) {
+                    String payload = CryptoUtils.encrypt(json.toString(), secretKey);
+                    if (payload != null) {
+                        JSONObject enc = new JSONObject();
+                        enc.put("type", "encrypted");
+                        enc.put("device_id", devId);
+                        enc.put("payload", payload);
+                        wireString = enc.toString() + "\n";
+                    } else {
+                        wireString = json.toString() + "\n";
+                    }
+                } else {
+                    wireString = json.toString() + "\n";
+                }
+                OutputStream out = socket.getOutputStream();
+                out.write(wireString.getBytes(StandardCharsets.UTF_8));
+                out.flush();
             } catch (Exception ignored) {}
         }).start();
     }
@@ -772,17 +830,12 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void handlePeer(Socket socket) {
-        String hostIp = socket.getInetAddress().getHostAddress();
+        String hostIp = socket.getInetAddress() != null ? socket.getInetAddress().getHostAddress() : null;
         if (hostIp != null) hostIp = hostIp.replaceFirst("^::ffff:", "");
         if (CryptoUtils.isLocalIp(hostIp)) {
             try { socket.close(); } catch (Exception ignored) {}
             return;
         }
-        lastPeerIp = hostIp;
-        try {
-            SharedPreferences prefs = getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
-            prefs.edit().putString("last_peer_ip", hostIp).apply();
-        } catch (Exception ignored) {}
 
         try {
             socket.setKeepAlive(true);
@@ -790,22 +843,28 @@ public class ClipSyncService extends AccessibilityService {
         } catch (Exception ignored) {}
 
         boolean isPrimary = false;
-        Socket existing = peers.get(hostIp);
-        if (existing == null || existing.isClosed() || !existing.isConnected()) {
+        synchronized (peers) {
+            Socket existing = peers.get(hostIp);
+            if (existing != null && !existing.isClosed() && existing.isConnected()) {
+                // Connection already active with this peer; close redundant duplicate
+                try { socket.close(); } catch (Exception ignored) {}
+                return;
+            }
             peers.put(hostIp, socket);
             isPrimary = true;
-            notifyPeerStateChanged();
+            lastPeerIp = hostIp;
+            CryptoUtils.addKnownPeerIp(this, hostIp);
         }
-        if (isPrimary) {
-            try {
-                JSONObject handshake = new JSONObject();
-                handshake.put("type", "handshake");
-                handshake.put("device_id", deviceId);
-                handshake.put("device_name", getDeviceName(this));
-                sendJsonToPeers(handshake);
-            } catch (Exception ignored) {}
-            sendCurrentBatteryStatus();
-        }
+        notifyPeerStateChanged();
+
+        try {
+            JSONObject handshake = new JSONObject();
+            handshake.put("type", "handshake");
+            handshake.put("device_id", deviceId);
+            handshake.put("device_name", getDeviceName(this));
+            sendJsonToPeer(socket, handshake);
+        } catch (Exception ignored) {}
+        sendCurrentBatteryStatus();
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
@@ -843,10 +902,25 @@ public class ClipSyncService extends AccessibilityService {
                 if ("ping".equals(type)) {
                     JSONObject pong = new JSONObject();
                     pong.put("type", "pong");
-                    sendJsonToPeers(pong);
+                    sendJsonToPeer(socket, pong);
                     continue;
                 }
                 if ("pong".equals(type)) {
+                    continue;
+                }
+
+                if ("notification".equals(type)) {
+                    String otp = obj.optString("otp", "");
+                    if (!otp.isEmpty()) {
+                        mainHandler.post(() -> {
+                            try {
+                                if (clipboard != null) {
+                                    ClipData clip = ClipData.newPlainText("ClipSync OTP", otp);
+                                    clipboard.setPrimaryClip(clip);
+                                }
+                            } catch (Exception ignored) {}
+                        });
+                    }
                     continue;
                 }
 
@@ -872,7 +946,7 @@ public class ClipSyncService extends AccessibilityService {
                             } catch (Exception ignored) {}
                         });
 
-                        // 2. High-priority Heads-up Notification (bypasses Android 10-14 background activity start restrictions)
+                        // 2. High-priority Heads-up Notification
                         showUrlNotification(targetUrl);
 
                         // 3. Attempt direct browser launch
@@ -914,9 +988,13 @@ public class ClipSyncService extends AccessibilityService {
         } catch (Exception ignored) {
         } finally {
             if (isPrimary) {
-                peers.remove(hostIp, socket);
-                peerNames.remove(hostIp);
-                notifyPeerStateChanged();
+                synchronized (peers) {
+                    if (peers.get(hostIp) == socket) {
+                        peers.remove(hostIp);
+                        peerNames.remove(hostIp);
+                        notifyPeerStateChanged();
+                    }
+                }
             }
             try { socket.close(); } catch (Exception ignored) {}
         }
@@ -950,6 +1028,7 @@ public class ClipSyncService extends AccessibilityService {
             String authHeader = null;
             long timestamp = 0;
             long contentLength = -1;
+            boolean isChunked = false;
 
             StringBuilder lineBuf = new StringBuilder();
             int b;
@@ -973,6 +1052,8 @@ public class ClipSyncService extends AccessibilityService {
                         try {
                             contentLength = Long.parseLong(line.substring(line.indexOf(':') + 1).trim());
                         } catch (Exception ignored) {}
+                    } else if (lower.startsWith("transfer-encoding:") && lower.contains("chunked")) {
+                        isChunked = true;
                     } else if (lower.startsWith("x-clipsync-auth:")) {
                         authHeader = line.substring(line.indexOf(':') + 1).trim();
                     } else if (lower.startsWith("x-clipsync-time:")) {
@@ -999,7 +1080,7 @@ public class ClipSyncService extends AccessibilityService {
                 filename = "received_" + System.currentTimeMillis();
             }
 
-            saveFileToStorage(filename, in, contentLength);
+            saveFileToStorage(filename, in, contentLength, isChunked);
 
             out.write("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nOK\n".getBytes(StandardCharsets.UTF_8));
             out.flush();
@@ -1009,7 +1090,60 @@ public class ClipSyncService extends AccessibilityService {
         }
     }
 
-    private void saveFileToStorage(String filename, InputStream in, long contentLength) {
+    private void copyPayloadToStream(InputStream in, OutputStream os, long contentLength, boolean isChunked) throws IOException {
+        byte[] buf = new byte[32768];
+        if (isChunked) {
+            while (true) {
+                StringBuilder line = new StringBuilder();
+                int c;
+                while ((c = in.read()) != -1) {
+                    if (c == '\n') break;
+                    if (c != '\r') line.append((char) c);
+                }
+                String raw = line.toString().trim().split(";")[0].trim();
+                if (raw.isEmpty()) continue;
+                int chunkSize;
+                try {
+                    chunkSize = Integer.parseInt(raw, 16);
+                } catch (Exception e) {
+                    break;
+                }
+                if (chunkSize <= 0) {
+                    // Consume trailing line
+                    while ((c = in.read()) != -1) {
+                        if (c == '\n') break;
+                    }
+                    break;
+                }
+                int remaining = chunkSize;
+                while (remaining > 0) {
+                    int r = in.read(buf, 0, Math.min(buf.length, remaining));
+                    if (r == -1) throw new EOFException("Premature EOF in chunked payload");
+                    os.write(buf, 0, r);
+                    remaining -= r;
+                }
+                int cr = in.read();
+                if (cr == '\r') {
+                    in.read(); // '\n'
+                }
+            }
+        } else if (contentLength > 0) {
+            long remaining = contentLength;
+            int read;
+            while (remaining > 0 && (read = in.read(buf, 0, (int) Math.min(buf.length, remaining))) != -1) {
+                os.write(buf, 0, read);
+                remaining -= read;
+            }
+        } else {
+            int read;
+            while ((read = in.read(buf)) != -1) {
+                os.write(buf, 0, read);
+            }
+        }
+        os.flush();
+    }
+
+    private void saveFileToStorage(String filename, InputStream in, long contentLength, boolean isChunked) {
         String lower = filename.toLowerCase();
         boolean isImage = lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
                           lower.endsWith(".png") || lower.endsWith(".webp") ||
@@ -1042,21 +1176,7 @@ public class ClipSyncService extends AccessibilityService {
             itemUri = getContentResolver().insert(collection, values);
             if (itemUri != null) {
                 try (OutputStream os = getContentResolver().openOutputStream(itemUri)) {
-                    byte[] buf = new byte[32768];
-                    if (contentLength > 0) {
-                        long remaining = contentLength;
-                        int read;
-                        while (remaining > 0 && (read = in.read(buf, 0, (int) Math.min(buf.length, remaining))) != -1) {
-                            os.write(buf, 0, read);
-                            remaining -= read;
-                        }
-                    } else {
-                        int read;
-                        while ((read = in.read(buf)) != -1) {
-                            os.write(buf, 0, read);
-                        }
-                    }
-                    os.flush();
+                    copyPayloadToStream(in, os, contentLength, isChunked);
                 }
             }
         } catch (Exception e) {
@@ -1069,21 +1189,7 @@ public class ClipSyncService extends AccessibilityService {
                 }
                 File target = new File(dir, filename);
                 try (FileOutputStream fos = new FileOutputStream(target)) {
-                    byte[] buf = new byte[32768];
-                    if (contentLength > 0) {
-                        long remaining = contentLength;
-                        int read;
-                        while (remaining > 0 && (read = in.read(buf, 0, (int) Math.min(buf.length, remaining))) != -1) {
-                            fos.write(buf, 0, read);
-                            remaining -= read;
-                        }
-                    } else {
-                        int read;
-                        while ((read = in.read(buf)) != -1) {
-                            fos.write(buf, 0, read);
-                        }
-                    }
-                    fos.flush();
+                    copyPayloadToStream(in, fos, contentLength, isChunked);
                 }
                 Intent scanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
                 scanIntent.setData(Uri.fromFile(target));
@@ -1195,19 +1301,22 @@ public class ClipSyncService extends AccessibilityService {
             while (true) {
                 try (DatagramSocket socket = new DatagramSocket()) {
                     socket.setBroadcast(true);
-                    InetAddress bcast = InetAddress.getByName("255.255.255.255");
                     while (true) {
                         if (!isSyncPaused(this)) {
                             byte[] beacon = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this)).getBytes(StandardCharsets.UTF_8);
-                            socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
+                            for (InetAddress bcast : CryptoUtils.getBroadcastAddresses()) {
+                                try {
+                                    socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
+                                } catch (Exception ignored) {}
+                            }
                         }
                         if (isSyncPaused(this)) {
                             Thread.sleep(4000);
                         } else if (!peers.isEmpty()) {
-                            // Already connected to PC! Slow down beaconing to save battery
-                            Thread.sleep(15000);
+                            // Active peers connected; beacon every 8 seconds
+                            Thread.sleep(8000);
                         } else {
-                            Thread.sleep(4000);
+                            Thread.sleep(3000);
                         }
                     }
                 } catch (Exception e) {
@@ -1218,7 +1327,13 @@ public class ClipSyncService extends AccessibilityService {
 
         new Thread(() -> {
             while (true) {
-                try (DatagramSocket socket = new DatagramSocket(UDP_PORT)) {
+                DatagramSocket socket = null;
+                try {
+                    socket = new DatagramSocket(null);
+                    socket.setReuseAddress(true);
+                    socket.setBroadcast(true);
+                    socket.bind(new InetSocketAddress(UDP_PORT));
+
                     byte[] buf = new byte[1024];
                     while (true) {
                         DatagramPacket packet = new DatagramPacket(buf, buf.length);
@@ -1234,7 +1349,7 @@ public class ClipSyncService extends AccessibilityService {
 
                         String msg = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
 
-                        // If probe or ping, reply immediately with device ID and name so PC can discover phone instantly
+                        // If probe or ping, reply immediately with device ID and name so peer can discover phone instantly
                         if (msg.startsWith("CLIP_SYNC:probe") || msg.startsWith("CLIP_SYNC:ping")) {
                             try (DatagramSocket replySock = new DatagramSocket()) {
                                 byte[] reply = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this)).getBytes(StandardCharsets.UTF_8);
@@ -1256,6 +1371,7 @@ public class ClipSyncService extends AccessibilityService {
                                 notifyPeerStateChanged();
                             }
                             final String finalIp = peerIp;
+                            CryptoUtils.addKnownPeerIp(this, finalIp);
                             if (!peers.containsKey(finalIp)) {
                                 new Thread(() -> connectToPeer(finalIp)).start();
                             }
@@ -1263,6 +1379,10 @@ public class ClipSyncService extends AccessibilityService {
                     }
                 } catch (Exception e) {
                     try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
+                } finally {
+                    if (socket != null && !socket.isClosed()) {
+                        try { socket.close(); } catch (Exception ignored) {}
+                    }
                 }
             }
         }).start();
@@ -1273,10 +1393,13 @@ public class ClipSyncService extends AccessibilityService {
         if (ip == null || ip.trim().isEmpty()) return;
         String cleanIp = ip.replaceFirst("^::ffff:", "");
         if (CryptoUtils.isLocalIp(cleanIp)) return;
-        try {
+        synchronized (peers) {
             Socket existing = peers.get(cleanIp);
             if (existing != null && !existing.isClosed() && existing.isConnected()) return;
-            Socket socket = new Socket(cleanIp, TCP_PORT);
+        }
+        try {
+            Socket socket = new Socket();
+            socket.connect(new InetSocketAddress(cleanIp, TCP_PORT), 3000);
             new Thread(() -> handlePeer(socket)).start();
         } catch (Exception ignored) {}
     }
@@ -1391,11 +1514,11 @@ public class ClipSyncService extends AccessibilityService {
             while (true) {
                 try {
                     Thread.sleep(8000);
-                    if (!isSyncPaused(this) && peers.isEmpty()) {
-                        SharedPreferences prefs = getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE);
-                        String lastIp = prefs.getString("last_peer_ip", null);
-                        if (lastIp != null && !lastIp.isEmpty()) {
-                            connectToPeer(lastIp);
+                    if (!isSyncPaused(this)) {
+                        for (String knownIp : CryptoUtils.getKnownPeerIps(this)) {
+                            if (!peers.containsKey(knownIp)) {
+                                connectToPeer(knownIp);
+                            }
                         }
                     }
                 } catch (Exception ignored) {}

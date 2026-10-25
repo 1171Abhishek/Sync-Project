@@ -1,5 +1,5 @@
 <resources>
     <string name="app_name">ClipSync</string>
-    <string name="accessibility_desc">Seamless background clipboard sync with your Linux PC.</string>
-    <string name="send_to_pc">Send to PC (ClipSync)</string>
+    <string name="accessibility_desc">Seamless background clipboard sync between Linux and Android devices.</string>
+    <string name="send_to_pc">Send via ClipSync</string>
 </resources>
