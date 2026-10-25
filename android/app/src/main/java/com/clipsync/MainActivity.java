@@ -49,6 +49,15 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvBatteryActiveBadge;
     private MaterialButton btnBatteryEnable;
 
+    // Device Interaction & Selection
+    private MaterialCardView cardDevicesManager;
+    private TextView tvDeviceCardTitle;
+    private TextView tvDeviceCardSubtitle;
+    private TextView btnRefreshDevices;
+    private MaterialButton btnChooseDevice;
+    private MaterialButton btnSendFileToDevice;
+    private MaterialButton btnSendClipToDevice;
+
     // Master Sync Switch
     private com.google.android.material.materialswitch.MaterialSwitch switchMasterSync;
 
@@ -112,6 +121,14 @@ public class MainActivity extends AppCompatActivity {
 
         tvBatteryActiveBadge = findViewById(R.id.tvBatteryActiveBadge);
         btnBatteryEnable = findViewById(R.id.btnBatteryEnable);
+
+        cardDevicesManager = findViewById(R.id.cardDevicesManager);
+        tvDeviceCardTitle = findViewById(R.id.tvDeviceCardTitle);
+        tvDeviceCardSubtitle = findViewById(R.id.tvDeviceCardSubtitle);
+        btnRefreshDevices = findViewById(R.id.btnRefreshDevices);
+        btnChooseDevice = findViewById(R.id.btnChooseDevice);
+        btnSendFileToDevice = findViewById(R.id.btnSendFileToDevice);
+        btnSendClipToDevice = findViewById(R.id.btnSendClipToDevice);
     }
 
     private void setupClickListeners() {
@@ -121,6 +138,30 @@ public class MainActivity extends AppCompatActivity {
 
         if (cardHeroStatus != null) {
             cardHeroStatus.setOnClickListener(v -> showConnectedDevicesDialog());
+        }
+
+        if (cardDevicesManager != null) {
+            cardDevicesManager.setOnClickListener(v -> showConnectedDevicesDialog());
+        }
+
+        if (btnChooseDevice != null) {
+            btnChooseDevice.setOnClickListener(v -> showConnectedDevicesDialog());
+        }
+
+        if (btnRefreshDevices != null) {
+            btnRefreshDevices.setOnClickListener(v -> {
+                ClipSyncService.sendDiscoveryProbe(this);
+                Toast.makeText(this, "Scanning for ClipSync devices...", Toast.LENGTH_SHORT).show();
+                updateUI();
+            });
+        }
+
+        if (btnSendFileToDevice != null) {
+            btnSendFileToDevice.setOnClickListener(v -> handleSendFileAction());
+        }
+
+        if (btnSendClipToDevice != null) {
+            btnSendClipToDevice.setOnClickListener(v -> handleSendClipAction());
         }
 
         if (switchMasterSync != null) {
@@ -286,6 +327,111 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void handleSendFileAction() {
+        Map<String, String> peersMap = ClipSyncService.getConnectedPeersMap();
+        if (peersMap.isEmpty()) {
+            Toast.makeText(this, "No devices connected. Tap 'Scan' to discover peers.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (peersMap.size() == 1) {
+            Map.Entry<String, String> single = peersMap.entrySet().iterator().next();
+            pendingTargetIp = single.getKey();
+            pendingTargetName = single.getValue();
+            launchFilePicker();
+            return;
+        }
+
+        java.util.List<Map.Entry<String, String>> entries = new java.util.ArrayList<>(peersMap.entrySet());
+        String[] labels = new String[entries.size()];
+        for (int i = 0; i < entries.size(); i++) {
+            Map.Entry<String, String> entry = entries.get(i);
+            String icon = isDesktopName(entry.getValue()) ? "💻 " : "📱 ";
+            labels[i] = icon + entry.getValue() + " (" + entry.getKey() + ")";
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("Send File To...")
+            .setItems(labels, (dialog, which) -> {
+                if (which >= 0 && which < entries.size()) {
+                    Map.Entry<String, String> chosen = entries.get(which);
+                    pendingTargetIp = chosen.getKey();
+                    pendingTargetName = chosen.getValue();
+                    launchFilePicker();
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void launchFilePicker() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            startActivityForResult(intent, REQUEST_CODE_PICK_FILE);
+        } catch (Exception e) {
+            Toast.makeText(this, "Could not open file picker", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void handleSendClipAction() {
+        Map<String, String> peersMap = ClipSyncService.getConnectedPeersMap();
+        if (peersMap.isEmpty()) {
+            Toast.makeText(this, "No devices connected to send clipboard", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip() == null || cm.getPrimaryClip().getItemCount() == 0) {
+            Toast.makeText(this, "Your clipboard is empty", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        CharSequence cs = cm.getPrimaryClip().getItemAt(0).getText();
+        if (cs == null || cs.length() == 0) {
+            Toast.makeText(this, "Your clipboard has no text", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String text = cs.toString();
+
+        if (peersMap.size() == 1) {
+            Map.Entry<String, String> single = peersMap.entrySet().iterator().next();
+            ClipSyncService.broadcastText(text, java.util.Collections.singleton(single.getKey()));
+            Toast.makeText(this, "✓ Sent clipboard to " + single.getValue(), Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        java.util.List<Map.Entry<String, String>> entries = new java.util.ArrayList<>(peersMap.entrySet());
+        String[] labels = new String[entries.size() + 1];
+        for (int i = 0; i < entries.size(); i++) {
+            Map.Entry<String, String> entry = entries.get(i);
+            String icon = isDesktopName(entry.getValue()) ? "💻 " : "📱 ";
+            labels[i] = icon + entry.getValue() + " (" + entry.getKey() + ")";
+        }
+        labels[entries.size()] = "🌐 All Connected Devices";
+
+        new AlertDialog.Builder(this)
+            .setTitle("Send Clipboard To...")
+            .setItems(labels, (dialog, which) -> {
+                if (which < entries.size()) {
+                    Map.Entry<String, String> chosen = entries.get(which);
+                    ClipSyncService.broadcastText(text, java.util.Collections.singleton(chosen.getKey()));
+                    Toast.makeText(this, "✓ Sent clipboard to " + chosen.getValue(), Toast.LENGTH_SHORT).show();
+                } else {
+                    ClipSyncService.broadcastText(text, null);
+                    Toast.makeText(this, "✓ Sent clipboard to all devices", Toast.LENGTH_SHORT).show();
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private static boolean isDesktopName(String name) {
+        if (name == null) return false;
+        String lower = name.toLowerCase();
+        return lower.contains("linux") || lower.contains("pc") || lower.contains("desktop") || lower.contains("laptop") || lower.contains("computer");
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -424,6 +570,25 @@ public class MainActivity extends AppCompatActivity {
                     tvHeroSubtitle.setText("Waiting for PC or phone on local Wi-Fi");
                     tvHeroSubtitle.setTextColor(ContextCompat.getColor(this, R.color.status_searching_text));
                 }
+            }
+        }
+
+        // Update Device Interaction Card dynamically
+        Map<String, String> peersMap = ClipSyncService.getConnectedPeersMap();
+        if (tvDeviceCardTitle != null && tvDeviceCardSubtitle != null) {
+            if (peersMap.isEmpty()) {
+                tvDeviceCardTitle.setText("Choose Target Device");
+                tvDeviceCardSubtitle.setText("No devices online • Tap 'Scan' or 'Select' to connect");
+            } else if (peersMap.size() == 1) {
+                Map.Entry<String, String> single = peersMap.entrySet().iterator().next();
+                String icon = isDesktopName(single.getValue()) ? "💻 " : "📱 ";
+                tvDeviceCardTitle.setText("Target: " + icon + single.getValue());
+                tvDeviceCardSubtitle.setText(single.getKey() + " • Ready for transfer");
+            } else {
+                tvDeviceCardTitle.setText("Target: " + peersMap.size() + " Devices Available");
+                java.util.List<String> names = new java.util.ArrayList<>();
+                for (String n : peersMap.values()) names.add(n);
+                tvDeviceCardSubtitle.setText(android.text.TextUtils.join(", ", names) + " • Tap to choose");
             }
         }
     }
