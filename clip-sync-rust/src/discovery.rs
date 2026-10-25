@@ -1,9 +1,13 @@
 // Copyright (C) 2026 Abhishek Kumar
 // Licensed under the GNU General Public License v3.0
 
-use crate::types::{get_peer_file, secure_write_file, FILE_PORT, PEER_FILE, TCP_PORT, UDP_PORT};
-use crate::utils::is_local_ip;
+use crate::types::{
+    get_active_peers_list, get_peer_file, secure_write_file, PeerDevice, FILE_PORT, PEER_FILE,
+    TCP_PORT, UDP_PORT,
+};
+use crate::utils::{cmd_exists, is_local_ip};
 use std::fs;
+use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -186,3 +190,130 @@ pub async fn discover_phone_ip() -> Option<String> {
 
     None
 }
+
+pub async fn select_target_devices(filter: Option<&str>) -> Vec<PeerDevice> {
+    let mut peers = get_active_peers_list();
+    if peers.is_empty() {
+        if let Some(ip) = discover_phone_ip().await {
+            peers.push(PeerDevice {
+                ip,
+                device_id: None,
+                device_name: Some("Phone".to_string()),
+            });
+        }
+    }
+
+    if peers.is_empty() {
+        return Vec::new();
+    }
+
+    // 1. Explicit CLI filter passed by user or script
+    if let Some(f) = filter {
+        let clean = f.trim();
+        if clean.eq_ignore_ascii_case("all") {
+            return peers;
+        }
+        let matched: Vec<PeerDevice> = peers
+            .iter()
+            .filter(|p| {
+                p.ip == clean
+                    || p.device_name
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&clean.to_lowercase())
+                    || p.device_id
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&clean.to_lowercase())
+            })
+            .cloned()
+            .collect();
+        if !matched.is_empty() {
+            return matched;
+        }
+    }
+
+    // 2. Exactly 1 device: direct fast path (no prompts, zero extra friction)
+    if peers.len() == 1 {
+        return peers;
+    }
+
+    // 3. Multiple devices connected: interactive choice
+    // Attempt Zenity GUI picker first if running in desktop environment
+    if cmd_exists("zenity")
+        && (std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok())
+    {
+        let mut cmd = std::process::Command::new("zenity");
+        cmd.args([
+            "--list",
+            "--radiolist",
+            "--title=ClipSync - Choose Target Device",
+            "--text=Multiple devices connected. Select target device:",
+            "--column=Pick",
+            "--column=IP",
+            "--column=Device Name",
+        ]);
+
+        for (i, p) in peers.iter().enumerate() {
+            cmd.arg(if i == 0 { "TRUE" } else { "FALSE" });
+            cmd.arg(&p.ip);
+            cmd.arg(p.device_name.as_deref().unwrap_or("Phone"));
+        }
+        // Add "All Devices" option
+        cmd.arg("FALSE");
+        cmd.arg("ALL");
+        cmd.arg("🌐 All Connected Devices");
+
+        cmd.args(["--print-column=2", "--hide-column=2", "--width=420", "--height=280"]);
+
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let chosen = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if chosen.eq_ignore_ascii_case("ALL") {
+                    return peers;
+                }
+                if let Some(selected) = peers.iter().find(|p| p.ip == chosen) {
+                    return vec![selected.clone()];
+                }
+            } else {
+                // User closed or cancelled dialog explicitly
+                return Vec::new();
+            }
+        }
+    }
+
+    // CLI fallback if Zenity is not available, fails, or pure terminal
+    println!("\n[ClipSync] Multiple devices connected:");
+    for (i, p) in peers.iter().enumerate() {
+        println!(
+            "  {}) {} ({})",
+            i + 1,
+            p.device_name.as_deref().unwrap_or("Phone"),
+            p.ip
+        );
+    }
+    println!("  {}) 🌐 All Devices", peers.len() + 1);
+    print!("Select device [1-{}]: ", peers.len() + 1);
+    let _ = io::stdout().flush();
+
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).is_ok() {
+        let choice = line.trim();
+        if let Ok(num) = choice.parse::<usize>() {
+            if num >= 1 && num <= peers.len() {
+                return vec![peers[num - 1].clone()];
+            } else if num == peers.len() + 1 {
+                return peers;
+            }
+        }
+        if choice.eq_ignore_ascii_case("all") {
+            return peers;
+        }
+    }
+
+    // Default to first peer if no input
+    vec![peers[0].clone()]
+}
+

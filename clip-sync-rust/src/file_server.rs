@@ -2,7 +2,7 @@
 // Licensed under the GNU General Public License v3.0
 
 use crate::crypto::CryptoManager;
-use crate::discovery::discover_phone_ip;
+use crate::discovery::select_target_devices;
 use crate::notifications::send_desktop_notification;
 use crate::types::FILE_PORT;
 use crate::utils::{format_size, get_downloads_dir, get_host_ip, get_unique_filename, sanitize_filename};
@@ -133,7 +133,7 @@ pub async fn start_file_server() {
     .await;
 }
 
-pub async fn send_file_to_phone(file_path: &Path) {
+pub async fn send_file_to_phone(file_path: &Path, device_filter: Option<&str>) {
     let metadata = match tokio::fs::metadata(file_path).await {
         Ok(m) => m,
         Err(_) => {
@@ -147,29 +147,18 @@ pub async fn send_file_to_phone(file_path: &Path) {
         std::process::exit(1);
     }
 
-    println!("[Discovery] Looking for connected phone on Wi-Fi...");
-    let phone_ip = match discover_phone_ip().await {
-        Some(ip) => ip,
-        None => {
-            eprintln!("[Error] No phone found on local Wi-Fi!");
-            eprintln!("-> Make sure your phone is connected to the same Wi-Fi and ClipSync is running.");
-            send_desktop_notification(
-                "ClipSync Send Failed",
-                "No phone found on local Wi-Fi",
-                "dialog-warning",
-                "normal",
-            );
-            std::process::exit(1);
-        }
-    };
-
-    let file = match tokio::fs::File::open(file_path).await {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("[Error] Failed to open file {:?}: {}", file_path, e);
-            std::process::exit(1);
-        }
-    };
+    println!("[Discovery] Looking for connected device(s) on Wi-Fi...");
+    let targets = select_target_devices(device_filter).await;
+    if targets.is_empty() {
+        eprintln!("[Error] No device found or operation cancelled.");
+        send_desktop_notification(
+            "ClipSync Send Cancelled",
+            "No device selected or reachable on local Wi-Fi",
+            "dialog-warning",
+            "normal",
+        );
+        std::process::exit(1);
+    }
 
     let file_name = file_path
         .file_name()
@@ -177,65 +166,100 @@ pub async fn send_file_to_phone(file_path: &Path) {
         .unwrap_or("sent_file");
     let size_str = format_size(metadata.len());
 
-    println!("[Send] Sending {} ({}) to Phone ({})...", file_name, size_str, phone_ip);
+    let mut success_count = 0;
+    for target in &targets {
+        let phone_ip = &target.ip;
+        let target_name = target.device_name.as_deref().unwrap_or("Phone");
+        println!(
+            "[Send] Sending {} ({}) to {} ({})...",
+            file_name, size_str, target_name, phone_ip
+        );
 
-    let crypto = CryptoManager::load_or_create();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    let auth_token = crypto.generate_auth_token(file_name, now);
+        let file = match tokio::fs::File::open(file_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[Error] Failed to open file {:?}: {}", file_path, e);
+                continue;
+            }
+        };
 
-    let url_target = format!("http://{}:{}/upload", phone_ip, FILE_PORT);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .unwrap_or_default();
+        let crypto = CryptoManager::load_or_create();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let auth_token = crypto.generate_auth_token(file_name, now);
 
-    let stream = tokio_util::io::ReaderStream::new(file);
-    let body = reqwest::Body::wrap_stream(stream);
-    let encoded_filename = percent_encoding::utf8_percent_encode(file_name, percent_encoding::NON_ALPHANUMERIC).to_string();
+        let url_target = format!("http://{}:{}/upload", phone_ip, FILE_PORT);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap_or_default();
 
-    let res = client
-        .post(&url_target)
-        .header("X-ClipSync-Auth", auth_token)
-        .header("X-ClipSync-Time", now.to_string())
-        .header("X-Filename", encoded_filename)
-        .header("Content-Type", "application/octet-stream")
-        .header("Content-Length", metadata.len().to_string())
-        .body(body)
-        .send()
-        .await;
+        let stream = tokio_util::io::ReaderStream::new(file);
+        let body = reqwest::Body::wrap_stream(stream);
+        let encoded_filename = percent_encoding::utf8_percent_encode(
+            file_name,
+            percent_encoding::NON_ALPHANUMERIC,
+        )
+        .to_string();
 
-    match res {
-        Ok(resp) if resp.status().is_success() => {
-            println!("[OK] Successfully sent {} to Phone! Saved to Gallery / Downloads.", file_name);
-            send_desktop_notification(
-                "ClipSync: Sent to Phone",
-                &format!("{} ({}) sent to Phone", file_name, size_str),
-                "document-save",
-                "normal",
-            );
+        let res = client
+            .post(&url_target)
+            .header("X-ClipSync-Auth", auth_token)
+            .header("X-ClipSync-Time", now.to_string())
+            .header("X-Filename", encoded_filename)
+            .header("Content-Type", "application/octet-stream")
+            .header("Content-Length", metadata.len().to_string())
+            .body(body)
+            .send()
+            .await;
+
+        match res {
+            Ok(resp) if resp.status().is_success() => {
+                println!(
+                    "[OK] Successfully sent {} to {}! Saved to Gallery / Downloads.",
+                    file_name, target_name
+                );
+                send_desktop_notification(
+                    "ClipSync: Sent File",
+                    &format!("{} ({}) sent to {}", file_name, size_str, target_name),
+                    "document-save",
+                    "normal",
+                );
+                success_count += 1;
+            }
+            Ok(resp) => {
+                eprintln!(
+                    "[Warning] {} responded with status: {}",
+                    target_name,
+                    resp.status()
+                );
+                send_desktop_notification(
+                    "ClipSync Send Failed",
+                    &format!(
+                        "{} returned {} while sending {}",
+                        target_name,
+                        resp.status(),
+                        file_name
+                    ),
+                    "dialog-warning",
+                    "normal",
+                );
+            }
+            Err(e) => {
+                eprintln!("[Error] Upload failed to {}: {}", target_name, e);
+                send_desktop_notification(
+                    "ClipSync Send Failed",
+                    &format!("Failed to send {} to {}", file_name, target_name),
+                    "dialog-warning",
+                    "normal",
+                );
+            }
         }
-        Ok(resp) => {
-            eprintln!("[Warning] Phone responded with status: {}", resp.status());
-            send_desktop_notification(
-                "ClipSync Send Failed",
-                &format!("Phone returned {} while sending {}", resp.status(), file_name),
-                "dialog-warning",
-                "normal",
-            );
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("[Error] Upload failed: {}", e);
-            send_desktop_notification(
-                "ClipSync Send Failed",
-                &format!("Failed to send {} to phone", file_name),
-                "dialog-warning",
-                "normal",
-            );
-            std::process::exit(1);
-        }
+    }
+
+    if success_count == 0 {
+        std::process::exit(1);
     }
 }

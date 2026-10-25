@@ -255,18 +255,38 @@ public class ClipSyncService extends AccessibilityService {
         }
     }
 
+    public static void disconnectPeer(String ip) {
+        if (ip == null) return;
+        synchronized (peers) {
+            Socket s = peers.remove(ip);
+            peerNames.remove(ip);
+            if (s != null) {
+                try { s.close(); } catch (Exception ignored) {}
+            }
+        }
+        notifyPeerStateChanged();
+    }
+
     public static void broadcastText(String text) {
+        broadcastText(text, null);
+    }
+
+    public static void broadcastText(String text, Set<String> targetIps) {
         ClipSyncService service = instance;
         if (service != null) {
-            service.processAndBroadcast(text);
+            service.processAndBroadcast(text, targetIps);
         }
     }
 
     public static void broadcastJson(JSONObject json) {
-        broadcastJson(instance, json);
+        broadcastJson(instance, json, null);
     }
 
     public static void broadcastJson(Context ctx, JSONObject json) {
+        broadcastJson(ctx, json, null);
+    }
+
+    public static void broadcastJson(Context ctx, JSONObject json, Set<String> targetIps) {
         Context context = ctx != null ? ctx : instance;
         if (isSyncPaused(context)) return;
         new Thread(() -> {
@@ -325,6 +345,9 @@ public class ClipSyncService extends AccessibilityService {
                 }
                 for (Map.Entry<String, Socket> entry : activeEntries) {
                     String hostIp = entry.getKey();
+                    if (targetIps != null && !targetIps.isEmpty() && !targetIps.contains(hostIp)) {
+                        continue;
+                    }
                     Socket socket = entry.getValue();
                     if (socket != null && !socket.isClosed()) {
                         try {
@@ -340,6 +363,27 @@ public class ClipSyncService extends AccessibilityService {
                                 }
                             }
                             try { socket.close(); } catch (Exception ignored) {}
+                        }
+                    }
+                }
+
+                // If targetIps specified but not yet in peers map, connect directly and send
+                if (targetIps != null && !targetIps.isEmpty()) {
+                    for (String ip : targetIps) {
+                        boolean alreadySent = false;
+                        for (Map.Entry<String, Socket> entry : activeEntries) {
+                            if (ip.equals(entry.getKey())) {
+                                alreadySent = true;
+                                break;
+                            }
+                        }
+                        if (!alreadySent) {
+                            try (Socket direct = new Socket()) {
+                                direct.connect(new InetSocketAddress(ip, TCP_PORT), 2000);
+                                OutputStream out = direct.getOutputStream();
+                                out.write(bytes);
+                                out.flush();
+                            } catch (Exception ignored) {}
                         }
                     }
                 }
@@ -777,6 +821,10 @@ public class ClipSyncService extends AccessibilityService {
     }
 
     private void processAndBroadcast(String str) {
+        processAndBroadcast(str, null);
+    }
+
+    private void processAndBroadcast(String str, Set<String> targetIps) {
         if (isSyncPaused(this)) return;
         if (str == null) return;
         String clean = str.trim();
@@ -798,17 +846,17 @@ public class ClipSyncService extends AccessibilityService {
         lastBroadcastedTime = now;
         String hash = hash(clean);
 
-        new Thread(() -> broadcast(str, hash)).start();
+        new Thread(() -> broadcast(str, hash, targetIps)).start();
     }
 
-    private void broadcast(String content, String hash) {
+    private void broadcast(String content, String hash, Set<String> targetIps) {
         try {
             JSONObject obj = new JSONObject();
             obj.put("type", "clipboard");
             obj.put("device_id", deviceId);
             obj.put("hash", hash);
             obj.put("content", content);
-            sendJsonToPeers(obj);
+            broadcastJson(this, obj, targetIps);
         } catch (Exception ignored) {}
     }
 

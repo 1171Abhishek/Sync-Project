@@ -131,6 +131,33 @@ pub struct PeerDevice {
     pub device_name: Option<String>,
 }
 
+pub fn get_active_peers_list() -> Vec<PeerDevice> {
+    for path in [get_active_peers_file(), PathBuf::from(ACTIVE_PEERS_FILE)] {
+        if let Ok(data) = std::fs::read(&path) {
+            if let Ok(peers) = serde_json::from_slice::<Vec<PeerDevice>>(&data) {
+                if !peers.is_empty() {
+                    return peers;
+                }
+            }
+        }
+    }
+
+    for path in [get_peer_file(), PathBuf::from(PEER_FILE)] {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            let ip = data.trim().to_string();
+            if !ip.is_empty() {
+                return vec![PeerDevice {
+                    ip,
+                    device_id: None,
+                    device_name: Some("Phone".to_string()),
+                }];
+            }
+        }
+    }
+
+    Vec::new()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatteryInfo {
     pub level: i32,

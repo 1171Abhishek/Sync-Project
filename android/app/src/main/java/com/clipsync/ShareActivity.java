@@ -13,12 +13,15 @@ import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import android.widget.Toast;
 
+import android.app.AlertDialog;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.json.JSONObject;
 import java.util.regex.Matcher;
@@ -61,11 +64,63 @@ public class ShareActivity extends Activity {
         }
     }
 
+    public static class TargetDevice {
+        public final String ip;
+        public final String name;
+        public final boolean isDesktop;
+
+        public TargetDevice(String ip, String name) {
+            this.ip = ip;
+            this.name = (name != null && !name.trim().isEmpty()) ? name.trim() : "Device (" + ip + ")";
+            String lower = this.name.toLowerCase();
+            this.isDesktop = lower.contains("linux") || lower.contains("pc") || lower.contains("desktop") || lower.contains("laptop") || lower.contains("computer");
+        }
+
+        public String getDisplayLabel() {
+            String icon = isDesktop ? "💻 " : "📱 ";
+            return icon + name + " (" + ip + ")";
+        }
+    }
+
+    private List<TargetDevice> getAvailableDevices() {
+        List<TargetDevice> list = new ArrayList<>();
+        Set<String> seenIps = new HashSet<>();
+
+        // 1. Check currently active connected peers from service
+        Map<String, String> activePeers = ClipSyncService.getConnectedPeersMap();
+        for (Map.Entry<String, String> entry : activePeers.entrySet()) {
+            String ip = entry.getKey().replaceFirst("^::ffff:", "").trim();
+            if (!CryptoUtils.isLocalIp(ip) && seenIps.add(ip)) {
+                list.add(new TargetDevice(ip, entry.getValue()));
+            }
+        }
+
+        // 2. If empty, check target IPs (probing / cached known peers)
+        if (list.isEmpty()) {
+            Set<String> discovered = getTargetIps();
+            for (String ip : discovered) {
+                if (seenIps.add(ip)) {
+                    String name = ClipSyncService.getConnectedPeerName(ip);
+                    list.add(new TargetDevice(ip, name));
+                }
+            }
+        }
+
+        return list;
+    }
+
     private void handleSend(Intent intent) {
         Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
         if (uri != null) {
             List<Uri> uris = new ArrayList<>();
             uris.add(uri);
+            if (intent.hasExtra("target_ip")) {
+                String targetIp = intent.getStringExtra("target_ip");
+                String targetName = intent.getStringExtra("target_name");
+                Toast.makeText(this, "Sending to " + (targetName != null ? targetName : targetIp) + "...", Toast.LENGTH_SHORT).show();
+                new Thread(() -> uploadFilesToIps(uris, Collections.singleton(targetIp), targetName != null ? targetName : targetIp)).start();
+                return;
+            }
             sendFiles(uris);
             return;
         }
@@ -76,9 +131,7 @@ public class ShareActivity extends Activity {
             if (url != null) {
                 sendUrl(url, text);
             } else {
-                ClipSyncService.broadcastText(text);
-                Toast.makeText(this, "✓ Copied to clipboard on connected devices!", Toast.LENGTH_SHORT).show();
-                finish();
+                sendText(text);
             }
             return;
         }
@@ -98,12 +151,10 @@ public class ShareActivity extends Activity {
     }
 
     private void sendFiles(List<Uri> uris) {
-        Toast.makeText(this, "Connecting to ClipSync device...", Toast.LENGTH_SHORT).show();
-
         new Thread(() -> {
-            Set<String> targetIps = getTargetIps();
+            List<TargetDevice> devices = getAvailableDevices();
 
-            if (targetIps.isEmpty()) {
+            if (devices.isEmpty()) {
                 mainHandler.post(() -> {
                     Toast.makeText(getApplicationContext(), "❌ No ClipSync device found on Wi-Fi", Toast.LENGTH_LONG).show();
                     finish();
@@ -111,75 +162,185 @@ public class ShareActivity extends Activity {
                 return;
             }
 
-            int successCount = 0;
-            for (Uri uri : uris) {
-                String fileName = getFileName(uri);
-                for (String ip : targetIps) {
-                    if (uploadFile(ip, uri, fileName)) {
-                        successCount++;
-                    }
-                }
+            // 1 device: fast direct path (zero extra clicks)
+            if (devices.size() == 1) {
+                TargetDevice single = devices.get(0);
+                mainHandler.post(() -> {
+                    Toast.makeText(getApplicationContext(), "Sending to " + single.name + "...", Toast.LENGTH_SHORT).show();
+                });
+                uploadFilesToIps(uris, Collections.singleton(single.ip), single.name);
+                return;
             }
 
-            final int finalSuccess = successCount;
+            // Multiple devices: interactive chooser dialog
             mainHandler.post(() -> {
-                if (finalSuccess > 0) {
-                    Toast.makeText(getApplicationContext(), "✓ Successfully sent " + finalSuccess + " file(s)!", Toast.LENGTH_SHORT).show();
-                } else {
-                    String msg = lastError.isEmpty() ? "Check if device is reachable on Wi-Fi" : lastError;
-                    Toast.makeText(getApplicationContext(), "❌ Send failed: " + msg, Toast.LENGTH_LONG).show();
+                if (isFinishing() || isDestroyed()) return;
+
+                String[] labels = new String[devices.size() + 1];
+                for (int i = 0; i < devices.size(); i++) {
+                    labels[i] = devices.get(i).getDisplayLabel();
                 }
-                finish();
+                labels[devices.size()] = "🌐 All Devices (" + devices.size() + " devices)";
+
+                AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
+                builder.setTitle("Choose Device to Send File");
+                builder.setItems(labels, (dialog, which) -> {
+                    if (which < devices.size()) {
+                        TargetDevice chosen = devices.get(which);
+                        Toast.makeText(getApplicationContext(), "Sending to " + chosen.name + "...", Toast.LENGTH_SHORT).show();
+                        new Thread(() -> uploadFilesToIps(uris, Collections.singleton(chosen.ip), chosen.name)).start();
+                    } else {
+                        Toast.makeText(getApplicationContext(), "Sending to all devices...", Toast.LENGTH_SHORT).show();
+                        Set<String> allIps = new HashSet<>();
+                        for (TargetDevice d : devices) allIps.add(d.ip);
+                        new Thread(() -> uploadFilesToIps(uris, allIps, "All Devices")).start();
+                    }
+                });
+                builder.setOnCancelListener(dialog -> finish());
+                builder.show();
             });
         }).start();
     }
 
-    private void sendUrl(String url, String text) {
-        Toast.makeText(this, "🌐 Sharing link...", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            try {
-                JSONObject obj = new JSONObject();
-                obj.put("type", "url");
-                obj.put("url", url);
-                obj.put("content", text);
-                obj.put("device_id", "android-share");
-
-                // 1. Try active peer connections from ClipSyncService
-                ClipSyncService.broadcastJson(this, obj);
-
-                if (ClipSyncService.getActivePeers().isEmpty()) {
-                    // 2. Direct standalone fallback if ClipSyncService is idle or disconnected
-                    Set<String> targets = getTargetIps();
-                    byte[] secretKey = CryptoUtils.getSecretKey(this);
-                    String wireString;
-                    if (secretKey != null) {
-                        String payload = CryptoUtils.encrypt(obj.toString(), secretKey);
-                        if (payload != null) {
-                            JSONObject enc = new JSONObject();
-                            enc.put("type", "encrypted");
-                            enc.put("device_id", "android-share");
-                            enc.put("payload", payload);
-                            wireString = enc.toString() + "\n";
-                        } else {
-                            wireString = obj.toString() + "\n";
-                        }
-                    } else {
-                        wireString = obj.toString() + "\n";
-                    }
-                    byte[] bytes = wireString.getBytes(StandardCharsets.UTF_8);
-
-                    for (String ip : targets) {
-                        try (Socket s = new Socket()) {
-                            s.connect(new InetSocketAddress(ip, 9877), 2500);
-                            OutputStream out = s.getOutputStream();
-                            out.write(bytes);
-                            out.flush();
-                            break;
-                        } catch (Exception ignored) {}
-                    }
+    private void uploadFilesToIps(List<Uri> uris, Set<String> targetIps, String targetName) {
+        int successCount = 0;
+        for (Uri uri : uris) {
+            String fileName = getFileName(uri);
+            for (String ip : targetIps) {
+                if (uploadFile(ip, uri, fileName)) {
+                    successCount++;
                 }
-            } catch (Exception ignored) {}
+            }
+        }
+
+        final int finalSuccess = successCount;
+        mainHandler.post(() -> {
+            if (finalSuccess > 0) {
+                Toast.makeText(getApplicationContext(), "✓ Successfully sent " + finalSuccess + " file(s) to " + targetName + "!", Toast.LENGTH_SHORT).show();
+            } else {
+                String msg = lastError.isEmpty() ? "Check if device is reachable on Wi-Fi" : lastError;
+                Toast.makeText(getApplicationContext(), "❌ Send failed: " + msg, Toast.LENGTH_LONG).show();
+            }
+            finish();
+        });
+    }
+
+    private void sendUrl(String url, String text) {
+        new Thread(() -> {
+            List<TargetDevice> devices = getAvailableDevices();
+
+            if (devices.isEmpty()) {
+                mainHandler.post(() -> {
+                    Toast.makeText(getApplicationContext(), "❌ No ClipSync device found on Wi-Fi", Toast.LENGTH_LONG).show();
+                    finish();
+                });
+                return;
+            }
+
+            // 1 device: fast direct path
+            if (devices.size() == 1) {
+                TargetDevice single = devices.get(0);
+                mainHandler.post(() -> {
+                    Toast.makeText(getApplicationContext(), "🌐 Sharing link with " + single.name + "...", Toast.LENGTH_SHORT).show();
+                });
+                executeSendUrl(url, text, Collections.singleton(single.ip), single.name);
+                return;
+            }
+
+            // Multiple devices: interactive chooser dialog
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+
+                String[] labels = new String[devices.size() + 1];
+                for (int i = 0; i < devices.size(); i++) {
+                    labels[i] = devices.get(i).getDisplayLabel();
+                }
+                labels[devices.size()] = "🌐 All Devices (" + devices.size() + " devices)";
+
+                AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
+                builder.setTitle("Choose Device to Open Link");
+                builder.setItems(labels, (dialog, which) -> {
+                    if (which < devices.size()) {
+                        TargetDevice chosen = devices.get(which);
+                        new Thread(() -> executeSendUrl(url, text, Collections.singleton(chosen.ip), chosen.name)).start();
+                    } else {
+                        Set<String> allIps = new HashSet<>();
+                        for (TargetDevice d : devices) allIps.add(d.ip);
+                        new Thread(() -> executeSendUrl(url, text, allIps, "All Devices")).start();
+                    }
+                });
+                builder.setOnCancelListener(dialog -> finish());
+                builder.show();
+            });
+        }).start();
+    }
+
+    private void executeSendUrl(String url, String text, Set<String> targetIps, String targetName) {
+        try {
+            JSONObject obj = new JSONObject();
+            obj.put("type", "url");
+            obj.put("url", url);
+            obj.put("content", text);
+            obj.put("device_id", "android-share");
+
+            ClipSyncService.broadcastJson(this, obj, targetIps);
+            mainHandler.post(() -> {
+                Toast.makeText(getApplicationContext(), "✓ Link sent to " + targetName, Toast.LENGTH_SHORT).show();
+                finish();
+            });
+        } catch (Exception ignored) {
             mainHandler.post(this::finish);
+        }
+    }
+
+    private void sendText(String text) {
+        new Thread(() -> {
+            List<TargetDevice> devices = getAvailableDevices();
+
+            if (devices.isEmpty()) {
+                mainHandler.post(() -> {
+                    ClipSyncService.broadcastText(text);
+                    Toast.makeText(getApplicationContext(), "✓ Copied to clipboard on local device", Toast.LENGTH_SHORT).show();
+                    finish();
+                });
+                return;
+            }
+
+            if (devices.size() == 1) {
+                TargetDevice single = devices.get(0);
+                mainHandler.post(() -> {
+                    ClipSyncService.broadcastText(text, Collections.singleton(single.ip));
+                    Toast.makeText(getApplicationContext(), "✓ Copied to clipboard on " + single.name, Toast.LENGTH_SHORT).show();
+                    finish();
+                });
+                return;
+            }
+
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+
+                String[] labels = new String[devices.size() + 1];
+                for (int i = 0; i < devices.size(); i++) {
+                    labels[i] = devices.get(i).getDisplayLabel();
+                }
+                labels[devices.size()] = "🌐 All Devices (" + devices.size() + " devices)";
+
+                AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
+                builder.setTitle("Choose Device to Copy Clipboard");
+                builder.setItems(labels, (dialog, which) -> {
+                    if (which < devices.size()) {
+                        TargetDevice chosen = devices.get(which);
+                        ClipSyncService.broadcastText(text, Collections.singleton(chosen.ip));
+                        Toast.makeText(getApplicationContext(), "✓ Copied to clipboard on " + chosen.name, Toast.LENGTH_SHORT).show();
+                    } else {
+                        ClipSyncService.broadcastText(text, null);
+                        Toast.makeText(getApplicationContext(), "✓ Copied to clipboard on all devices", Toast.LENGTH_SHORT).show();
+                    }
+                    finish();
+                });
+                builder.setOnCancelListener(dialog -> finish());
+                builder.show();
+            });
         }).start();
     }
 

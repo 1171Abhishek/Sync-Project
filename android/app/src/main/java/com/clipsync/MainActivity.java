@@ -183,26 +183,107 @@ public class MainActivity extends AppCompatActivity {
         builder.show();
     }
 
+    private String pendingTargetIp = null;
+    private String pendingTargetName = null;
+    private static final int REQUEST_CODE_PICK_FILE = 2001;
+
     private void showConnectedDevicesDialog() {
         Map<String, String> peersMap = ClipSyncService.getConnectedPeersMap();
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("Connected Devices (" + peersMap.size() + ")");
 
         if (peersMap.isEmpty()) {
-            builder.setMessage("No devices currently connected.\n\nEnsure your PC or phone is running ClipSync and connected to the same Wi-Fi network.");
+            builder.setMessage("No devices currently connected.\n\nEnsure your PC or other phones are connected to the same Wi-Fi network and ClipSync is active.");
+            builder.setPositiveButton("Search Now", (d, w) -> {
+                ClipSyncService.sendDiscoveryProbe(this);
+                Toast.makeText(this, "Searching for ClipSync devices...", Toast.LENGTH_SHORT).show();
+            });
+            builder.setNegativeButton("Close", null);
         } else {
-            StringBuilder sb = new StringBuilder();
-            int index = 1;
-            for (Map.Entry<String, String> entry : peersMap.entrySet()) {
-                sb.append(index++).append(". ")
-                  .append(entry.getValue())
-                  .append(" (").append(entry.getKey()).append(")\n   Status: Live\n\n");
+            java.util.List<Map.Entry<String, String>> entries = new java.util.ArrayList<>(peersMap.entrySet());
+            String[] items = new String[entries.size()];
+            for (int i = 0; i < entries.size(); i++) {
+                Map.Entry<String, String> entry = entries.get(i);
+                String name = entry.getValue();
+                String ip = entry.getKey();
+                String lower = name.toLowerCase();
+                String icon = (lower.contains("linux") || lower.contains("pc") || lower.contains("desktop") || lower.contains("laptop") || lower.contains("computer")) ? "💻 " : "📱 ";
+                items[i] = icon + name + "\n" + ip + " • Live";
             }
-            builder.setMessage(sb.toString().trim());
+
+            builder.setItems(items, (dialog, which) -> {
+                if (which >= 0 && which < entries.size()) {
+                    Map.Entry<String, String> selected = entries.get(which);
+                    showDeviceActionDialog(selected.getKey(), selected.getValue());
+                }
+            });
+            builder.setNegativeButton("Close", null);
         }
 
-        builder.setPositiveButton("OK", null);
         builder.show();
+    }
+
+    private void showDeviceActionDialog(String peerIp, String peerName) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle(peerName);
+
+        String[] actions = new String[] {
+            "📤 Send File to this Device",
+            "📋 Send Current Clipboard",
+            "🔌 Disconnect Device"
+        };
+
+        builder.setItems(actions, (dialog, which) -> {
+            if (which == 0) {
+                pendingTargetIp = peerIp;
+                pendingTargetName = peerName;
+                try {
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    startActivityForResult(intent, REQUEST_CODE_PICK_FILE);
+                } catch (Exception e) {
+                    Toast.makeText(this, "Could not open file picker", Toast.LENGTH_SHORT).show();
+                }
+            } else if (which == 1) {
+                android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip() != null && cm.getPrimaryClip().getItemCount() > 0) {
+                    CharSequence cs = cm.getPrimaryClip().getItemAt(0).getText();
+                    if (cs != null && cs.length() > 0) {
+                        ClipSyncService.broadcastText(cs.toString(), java.util.Collections.singleton(peerIp));
+                        Toast.makeText(this, "✓ Clipboard sent to " + peerName, Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(this, "Clipboard has no text", Toast.LENGTH_SHORT).show();
+                    }
+                } else {
+                    Toast.makeText(this, "Clipboard is empty", Toast.LENGTH_SHORT).show();
+                }
+            } else if (which == 2) {
+                ClipSyncService.disconnectPeer(peerIp);
+                Toast.makeText(this, "Disconnected from " + peerName, Toast.LENGTH_SHORT).show();
+                updateUI();
+            }
+        });
+
+        builder.setNegativeButton("Cancel", null);
+        builder.show();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_PICK_FILE && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            Uri uri = data.getData();
+            if (pendingTargetIp != null) {
+                Intent sendIntent = new Intent(this, ShareActivity.class);
+                sendIntent.setAction(Intent.ACTION_SEND);
+                sendIntent.putExtra(Intent.EXTRA_STREAM, uri);
+                sendIntent.putExtra("target_ip", pendingTargetIp);
+                sendIntent.putExtra("target_name", pendingTargetName);
+                sendIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(sendIntent);
+            }
+        }
     }
 
     @Override

@@ -23,8 +23,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 use types::{
-    get_active_peers_file, get_battery_file, get_peer_file, BatteryInfo, PeerDevice, SyncMessage,
-    ACTIVE_PEERS_FILE, BATTERY_FILE, FILE_PORT, PEER_FILE, TCP_PORT,
+    get_active_peers_list, get_battery_file, BatteryInfo, SyncMessage, BATTERY_FILE, FILE_PORT,
+    TCP_PORT,
 };
 use url_handler::{send_clipboard_link_to_phone, send_url_to_phone};
 use utils::get_downloads_dir;
@@ -70,32 +70,6 @@ fn init_environment() {
     }
 }
 
-fn get_active_peers_list() -> Vec<PeerDevice> {
-    for path in [get_active_peers_file(), std::path::PathBuf::from(ACTIVE_PEERS_FILE)] {
-        if let Ok(data) = fs::read(&path) {
-            if let Ok(peers) = serde_json::from_slice::<Vec<PeerDevice>>(&data) {
-                if !peers.is_empty() {
-                    return peers;
-                }
-            }
-        }
-    }
-
-    for path in [get_peer_file(), std::path::PathBuf::from(PEER_FILE)] {
-        if let Ok(data) = fs::read_to_string(&path) {
-            let ip = data.trim().to_string();
-            if !ip.is_empty() {
-                return vec![PeerDevice {
-                    ip,
-                    device_id: None,
-                    device_name: Some("Phone".to_string()),
-                }];
-            }
-        }
-    }
-
-    Vec::new()
-}
 
 fn read_battery_info() -> Option<BatteryInfo> {
     for path in [get_battery_file(), std::path::PathBuf::from(BATTERY_FILE)] {
@@ -161,16 +135,16 @@ fn show_phone_status() {
     println!("[Device] Device connected, waiting for battery update...");
 }
 
-async fn send_file_or_url(target: &str) {
+async fn send_file_or_url(target: &str, device_filter: Option<&str>) {
     let clean = target.trim();
     if clean.starts_with("http://")
         || clean.starts_with("https://")
         || clean.starts_with("www.")
         || (!Path::new(clean).exists() && clean.contains('.'))
     {
-        send_url_to_phone(clean).await;
+        send_url_to_phone(clean, device_filter).await;
     } else {
-        send_file_to_phone(Path::new(clean)).await;
+        send_file_to_phone(Path::new(clean), device_filter).await;
     }
 }
 
@@ -299,11 +273,12 @@ async fn main() {
         }
 
         if arg == "send-link" {
-            if args.len() >= 3 {
-                send_url_to_phone(&args[2]).await;
+            let device_arg = if args.len() >= 4 { Some(args[3].as_str()) } else { None };
+            if args.len() >= 3 && !args[2].starts_with('-') {
+                send_url_to_phone(&args[2], device_arg).await;
             } else {
                 let clipboard = clipboard::ClipboardManager::new();
-                send_clipboard_link_to_phone(&clipboard).await;
+                send_clipboard_link_to_phone(&clipboard, device_arg).await;
             }
             return;
         }
@@ -314,16 +289,18 @@ async fn main() {
             || arg.starts_with("https://")
             || arg.starts_with("www.")
         {
-            let target = if arg == "send" {
+            let (target, device_arg) = if arg == "send" {
                 if args.len() < 3 {
-                    eprintln!("Usage: clip-sync send <file|url>");
+                    eprintln!("Usage: clip-sync send <file|url> [target_device]");
                     std::process::exit(1);
                 }
-                &args[2]
+                let dev = if args.len() >= 4 { Some(args[3].as_str()) } else { None };
+                (&args[2], dev)
             } else {
-                arg
+                let dev = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
+                (arg, dev)
             };
-            send_file_or_url(target).await;
+            send_file_or_url(target, device_arg).await;
             return;
         }
 
@@ -341,8 +318,8 @@ async fn main() {
             println!("  clip-sync devices         Show list of active connected phone peers");
             println!("  clip-sync test-battery    Simulate phone low battery & full charge alerts");
             println!("  clip-sync test-call [name] Simulate incoming call, auto-dismiss, and missed call");
-            println!("  clip-sync send <file|url> Send image, file, or URL link to your Phone");
-            println!("  clip-sync send-link [url] Send copied/highlighted browser link to your Phone (Ctrl+Alt+P)");
+            println!("  clip-sync send <file|url> [device] Send image, file, or URL link to device(s)");
+            println!("  clip-sync send-link [url] [device] Send copied/highlighted link to device(s) (Ctrl+Alt+P)");
             println!("  clip-sync pair [pin]      View or set the 6-digit security pairing PIN");
             println!("  clip-sync setup           Configure GNOME shortcut & Nautilus right-click script");
             return;

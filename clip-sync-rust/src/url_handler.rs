@@ -3,7 +3,7 @@
 
 use crate::clipboard::ClipboardManager;
 use crate::crypto::CryptoManager;
-use crate::discovery::discover_phone_ip;
+use crate::discovery::select_target_devices;
 use crate::notifications::send_desktop_notification;
 use crate::types::{SyncMessage, TCP_PORT};
 use crate::utils::{cmd_exists, extract_url};
@@ -90,7 +90,7 @@ pub async fn handle_url(msg: &SyncMessage, clipboard: &ClipboardManager) {
     );
 }
 
-pub async fn send_url_to_phone(url_str: &str) {
+pub async fn send_url_to_phone(url_str: &str, device_filter: Option<&str>) {
     let clean_url = match extract_url(url_str) {
         Some(u) => u,
         None => {
@@ -103,92 +103,113 @@ pub async fn send_url_to_phone(url_str: &str) {
         }
     };
 
-    println!("[Discovery] Looking for connected phone on Wi-Fi...");
-    let phone_ip = match discover_phone_ip().await {
-        Some(ip) => ip,
-        None => {
-            eprintln!("[Error] No phone found on local Wi-Fi!");
-            eprintln!("-> Make sure your phone is connected to the same Wi-Fi and ClipSync is running.");
-            send_desktop_notification(
-                "ClipSync Send Failed",
-                "No phone found on local Wi-Fi",
-                "dialog-warning",
-                "normal",
-            );
-            std::process::exit(1);
-        }
-    };
-
-    let target_addr = format!("{}:{}", phone_ip, TCP_PORT);
-    let mut stream = match tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(&target_addr)).await {
-        Ok(Ok(s)) => s,
-        _ => {
-            eprintln!("[Error] Failed to connect to phone at {}", target_addr);
-            send_desktop_notification(
-                "ClipSync Send Failed",
-                &format!("Failed to connect to phone at {}", target_addr),
-                "dialog-warning",
-                "normal",
-            );
-            std::process::exit(1);
-        }
-    };
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
-    let inner_msg = SyncMessage {
-        msg_type: Some("url".to_string()),
-        device_id: "linux-cli".to_string(),
-        url: Some(clean_url.clone()),
-        content: Some(clean_url.clone()),
-        timestamp: Some(now),
-        ..Default::default()
-    };
-
-    let inner_data = serde_json::to_vec(&inner_msg).unwrap_or_default();
-    let crypto = CryptoManager::load_or_create();
-
-    let wire_data = match crypto.encrypt(&inner_data) {
-        Ok(payload) => {
-            let enc_msg = SyncMessage {
-                msg_type: Some("encrypted".to_string()),
-                device_id: "linux-cli".to_string(),
-                payload: Some(payload),
-                ..Default::default()
-            };
-            serde_json::to_vec(&enc_msg).unwrap_or(inner_data)
-        }
-        Err(_) => inner_data,
-    };
-
-    let mut final_payload = wire_data;
-    final_payload.push(b'\n');
-
-    if let Err(e) = stream.write_all(&final_payload).await {
-        eprintln!("[Error] Failed to send URL to phone: {}", e);
+    println!("[Discovery] Looking for connected device(s) on Wi-Fi...");
+    let targets = select_target_devices(device_filter).await;
+    if targets.is_empty() {
+        eprintln!("[Error] No device found or operation cancelled.");
         send_desktop_notification(
-            "ClipSync Send Failed",
-            &format!("Failed to send URL: {}", e),
+            "ClipSync Send Cancelled",
+            "No device selected or reachable on local Wi-Fi",
             "dialog-warning",
             "normal",
         );
         std::process::exit(1);
     }
 
-    // Brief flush delay so OS TCP stack delivers before socket close
-    sleep(Duration::from_millis(150)).await;
+    let mut success_count = 0;
+    for target in &targets {
+        let phone_ip = &target.ip;
+        let target_name = target.device_name.as_deref().unwrap_or("Phone");
+        let target_addr = format!("{}:{}", phone_ip, TCP_PORT);
 
-    println!("[OK] Sent link to Phone ({})! Opened in browser: {}", phone_ip, clean_url);
-    send_desktop_notification("Opening Tab on Phone", &clean_url, "web-browser", "normal");
+        let mut stream = match tokio::time::timeout(
+            Duration::from_secs(3),
+            TcpStream::connect(&target_addr),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            _ => {
+                eprintln!("[Error] Failed to connect to {} at {}", target_name, target_addr);
+                send_desktop_notification(
+                    "ClipSync Send Failed",
+                    &format!("Failed to connect to {} at {}", target_name, target_addr),
+                    "dialog-warning",
+                    "normal",
+                );
+                continue;
+            }
+        };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let inner_msg = SyncMessage {
+            msg_type: Some("url".to_string()),
+            device_id: "linux-cli".to_string(),
+            url: Some(clean_url.clone()),
+            content: Some(clean_url.clone()),
+            timestamp: Some(now),
+            ..Default::default()
+        };
+
+        let inner_data = serde_json::to_vec(&inner_msg).unwrap_or_default();
+        let crypto = CryptoManager::load_or_create();
+
+        let wire_data = match crypto.encrypt(&inner_data) {
+            Ok(payload) => {
+                let enc_msg = SyncMessage {
+                    msg_type: Some("encrypted".to_string()),
+                    device_id: "linux-cli".to_string(),
+                    payload: Some(payload),
+                    ..Default::default()
+                };
+                serde_json::to_vec(&enc_msg).unwrap_or(inner_data)
+            }
+            Err(_) => inner_data,
+        };
+
+        let mut final_payload = wire_data;
+        final_payload.push(b'\n');
+
+        if let Err(e) = stream.write_all(&final_payload).await {
+            eprintln!("[Error] Failed to send URL to {}: {}", target_name, e);
+            send_desktop_notification(
+                "ClipSync Send Failed",
+                &format!("Failed to send URL to {}: {}", target_name, e),
+                "dialog-warning",
+                "normal",
+            );
+            continue;
+        }
+
+        // Brief flush delay so OS TCP stack delivers before socket close
+        sleep(Duration::from_millis(150)).await;
+
+        println!(
+            "[OK] Sent link to {} ({})! Opened in browser: {}",
+            target_name, phone_ip, clean_url
+        );
+        send_desktop_notification(
+            &format!("Opening Tab on {}", target_name),
+            &clean_url,
+            "web-browser",
+            "normal",
+        );
+        success_count += 1;
+    }
+
+    if success_count == 0 {
+        std::process::exit(1);
+    }
 }
 
-pub async fn send_clipboard_link_to_phone(clipboard: &ClipboardManager) {
+pub async fn send_clipboard_link_to_phone(clipboard: &ClipboardManager, device_filter: Option<&str>) {
     if let Some(text) = clipboard.read_clipboard() {
         if let Some(url) = extract_url(&text) {
-            send_url_to_phone(&url).await;
+            send_url_to_phone(&url, device_filter).await;
             return;
         }
     }
@@ -199,7 +220,7 @@ pub async fn send_clipboard_link_to_phone(clipboard: &ClipboardManager) {
             if out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout);
                 if let Some(url) = extract_url(&s) {
-                    send_url_to_phone(&url).await;
+                    send_url_to_phone(&url, device_filter).await;
                     return;
                 }
             }
@@ -209,7 +230,7 @@ pub async fn send_clipboard_link_to_phone(clipboard: &ClipboardManager) {
             if out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout);
                 if let Some(url) = extract_url(&s) {
-                    send_url_to_phone(&url).await;
+                    send_url_to_phone(&url, device_filter).await;
                     return;
                 }
             }
