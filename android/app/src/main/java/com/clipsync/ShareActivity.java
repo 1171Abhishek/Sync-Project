@@ -126,6 +126,21 @@ public class ShareActivity extends Activity {
         }
 
         String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+        if (text == null && intent.getData() != null) {
+            text = intent.getData().toString();
+        }
+        if (text == null && intent.getClipData() != null && intent.getClipData().getItemCount() > 0) {
+            CharSequence cs = intent.getClipData().getItemAt(0).getText();
+            if (cs != null) {
+                text = cs.toString();
+            } else if (intent.getClipData().getItemAt(0).getUri() != null) {
+                text = intent.getClipData().getItemAt(0).getUri().toString();
+            }
+        }
+        if (text == null && intent.hasExtra(Intent.EXTRA_HTML_TEXT)) {
+            text = intent.getStringExtra(Intent.EXTRA_HTML_TEXT);
+        }
+
         if (text != null && !text.trim().isEmpty()) {
             String url = extractUrl(text);
             if (url != null) {

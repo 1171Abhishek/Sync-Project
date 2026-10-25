@@ -346,8 +346,7 @@ public class MainActivity extends AppCompatActivity {
                 if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip() != null && cm.getPrimaryClip().getItemCount() > 0) {
                     CharSequence cs = cm.getPrimaryClip().getItemAt(0).getText();
                     if (cs != null && cs.length() > 0) {
-                        ClipSyncService.broadcastText(cs.toString(), java.util.Collections.singleton(peerIp));
-                        Toast.makeText(this, "✓ Clipboard sent to " + peerName, Toast.LENGTH_SHORT).show();
+                        sendContentToDevice(cs.toString(), java.util.Collections.singleton(peerIp), peerName);
                     } else {
                         Toast.makeText(this, "Clipboard has no text", Toast.LENGTH_SHORT).show();
                     }
@@ -461,21 +460,18 @@ public class MainActivity extends AppCompatActivity {
         // Direct send to active target device
         String activeIp = ClipSyncService.getActiveTargetIp(this);
         if (activeIp != null && !"ALL".equalsIgnoreCase(activeIp) && peersMap.containsKey(activeIp)) {
-            ClipSyncService.broadcastText(text, java.util.Collections.singleton(activeIp));
-            Toast.makeText(this, "✓ Clipboard sent to " + peersMap.get(activeIp), Toast.LENGTH_SHORT).show();
+            sendContentToDevice(text, java.util.Collections.singleton(activeIp), peersMap.get(activeIp));
             return;
         }
 
         if (peersMap.size() == 1) {
             Map.Entry<String, String> single = peersMap.entrySet().iterator().next();
-            ClipSyncService.broadcastText(text, java.util.Collections.singleton(single.getKey()));
-            Toast.makeText(this, "✓ Sent clipboard to " + single.getValue(), Toast.LENGTH_SHORT).show();
+            sendContentToDevice(text, java.util.Collections.singleton(single.getKey()), single.getValue());
             return;
         }
 
         if ("ALL".equalsIgnoreCase(activeIp)) {
-            ClipSyncService.broadcastText(text, null);
-            Toast.makeText(this, "✓ Clipboard sent to all " + peersMap.size() + " devices", Toast.LENGTH_SHORT).show();
+            sendContentToDevice(text, null, "all " + peersMap.size() + " devices");
             return;
         }
 
@@ -493,15 +489,43 @@ public class MainActivity extends AppCompatActivity {
             .setItems(labels, (dialog, which) -> {
                 if (which < entries.size()) {
                     Map.Entry<String, String> chosen = entries.get(which);
-                    ClipSyncService.broadcastText(text, java.util.Collections.singleton(chosen.getKey()));
-                    Toast.makeText(this, "✓ Sent clipboard to " + chosen.getValue(), Toast.LENGTH_SHORT).show();
+                    sendContentToDevice(text, java.util.Collections.singleton(chosen.getKey()), chosen.getValue());
                 } else {
-                    ClipSyncService.broadcastText(text, null);
-                    Toast.makeText(this, "✓ Sent clipboard to all devices", Toast.LENGTH_SHORT).show();
+                    sendContentToDevice(text, null, "all devices");
                 }
             })
             .setNegativeButton("Cancel", null)
             .show();
+    }
+
+    private static final java.util.regex.Pattern URL_PATTERN =
+        java.util.regex.Pattern.compile("https?://[^\\s<>\"{}|\\\\^`]+", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    public static String extractUrl(String text) {
+        if (text == null) return null;
+        java.util.regex.Matcher m = URL_PATTERN.matcher(text);
+        if (m.find()) {
+            return m.group();
+        }
+        return null;
+    }
+
+    private void sendContentToDevice(String text, java.util.Set<String> targetIps, String targetName) {
+        String url = extractUrl(text);
+        if (url != null) {
+            try {
+                org.json.JSONObject obj = new org.json.JSONObject();
+                obj.put("type", "url");
+                obj.put("url", url);
+                obj.put("content", text);
+                obj.put("device_id", ClipSyncService.getDeviceName(this));
+                ClipSyncService.broadcastJson(this, obj, targetIps);
+                Toast.makeText(this, "🌐 Link sent & opened on " + targetName, Toast.LENGTH_SHORT).show();
+                return;
+            } catch (Exception ignored) {}
+        }
+        ClipSyncService.broadcastText(text, targetIps);
+        Toast.makeText(this, "✓ Clipboard sent to " + targetName, Toast.LENGTH_SHORT).show();
     }
 
     private static boolean isDesktopName(String name) {

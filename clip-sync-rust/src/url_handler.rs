@@ -7,7 +7,7 @@ use crate::discovery::select_target_devices;
 use crate::notifications::send_desktop_notification;
 use crate::types::{SyncMessage, TCP_PORT};
 use crate::utils::{cmd_exists, extract_url};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -34,27 +34,76 @@ pub fn open_browser_tab(url_str: &str) -> Result<(), String> {
         return Err("Malformed URL".to_string());
     }
 
-    if cmd_exists("xdg-open") {
-        if Command::new("xdg-open")
-            .arg(clean)
-            .spawn()
-            .is_ok()
-        {
-            return Ok(());
+    // 1. Preferred modern Linux approach: XDG Desktop Portal via busctl
+    // Delegates opening to the user's active graphical session, bypassing systemd cgroup & browser zygote IPC pipe issues.
+    if cmd_exists("busctl") {
+        let status = Command::new("busctl")
+            .args([
+                "--user",
+                "call",
+                "org.freedesktop.portal.Desktop",
+                "/org/freedesktop/portal/desktop",
+                "org.freedesktop.portal.OpenURI",
+                "OpenURI",
+                "ssa{sv}",
+                "",
+                clean,
+                "0",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        if let Ok(s) = status {
+            if s.success() {
+                return Ok(());
+            }
         }
     }
 
+    // 2. gio open with detached stdio
     if cmd_exists("gio") {
-        if Command::new("gio")
+        let res = Command::new("gio")
             .args(["open", clean])
-            .spawn()
-            .is_ok()
-        {
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if res.is_ok() {
             return Ok(());
         }
     }
 
-    Err("No browser launcher found (xdg-open / gio)".to_string())
+    // 3. xdg-open with detached stdio
+    if cmd_exists("xdg-open") {
+        let res = Command::new("xdg-open")
+            .arg(clean)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if res.is_ok() {
+            return Ok(());
+        }
+    }
+
+    // 4. Direct browser binary fallbacks
+    for b in &["brave-origin-stable", "brave-browser", "brave", "google-chrome", "firefox", "chromium"] {
+        if cmd_exists(b) {
+            let res = Command::new(b)
+                .arg(clean)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            if res.is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    Err("No browser launcher found (portal / gio / xdg-open)".to_string())
 }
 
 pub async fn handle_url(msg: &SyncMessage, clipboard: &ClipboardManager) {
