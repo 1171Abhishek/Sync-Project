@@ -84,6 +84,9 @@ pub struct SyncMessage {
     pub device_id: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -138,6 +141,8 @@ pub struct PeerDevice {
     pub device_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
 }
 
 pub fn get_active_peers_list() -> Vec<PeerDevice> {
@@ -157,6 +162,7 @@ pub fn get_active_peers_list() -> Vec<PeerDevice> {
                     ip,
                     device_id: None,
                     device_name: Some("Phone".to_string()),
+                    os: Some("android".to_string()),
                 }];
             }
         }
@@ -185,10 +191,8 @@ pub fn get_selected_target() -> Option<String> {
 pub fn set_selected_target(target: &str) -> std::io::Result<()> {
     secure_write_file(get_target_file(), target.as_bytes())?;
     secure_write_file(TARGET_FILE, target.as_bytes())?;
-    if !target.eq_ignore_ascii_case("all") {
-        let _ = secure_write_file(get_peer_file(), target.as_bytes());
-        let _ = secure_write_file(PEER_FILE, target.as_bytes());
-    }
+    let _ = secure_write_file(get_peer_file(), target.as_bytes());
+    let _ = secure_write_file(PEER_FILE, target.as_bytes());
     Ok(())
 }
 

@@ -62,7 +62,7 @@ impl DiscoveryManager {
             };
             let _ = socket.set_broadcast(true);
 
-            let beacon = format!("CLIP_SYNC:{}:{}", this_broadcaster.device_id, this_broadcaster.device_name);
+            let beacon = format!("CLIP_SYNC:{}:{}:linux", this_broadcaster.device_id, this_broadcaster.device_name);
             let b_addr: SocketAddr = format!("255.255.255.255:{}", UDP_PORT).parse().unwrap();
 
             loop {
@@ -106,7 +106,13 @@ impl DiscoveryManager {
 
                         // Respond to probe/ping immediately
                         if peer_id == "probe" || peer_id == "ping" {
-                            let reply = format!("CLIP_SYNC:{}:{}", this_listener.device_id, this_listener.device_name);
+                            let probe_os = parts.get(3).copied().or_else(|| parts.get(2).copied());
+                            if let Some(os) = probe_os {
+                                if os.eq_ignore_ascii_case("linux") {
+                                    continue; // Ignore probe from another Linux system
+                                }
+                            }
+                            let reply = format!("CLIP_SYNC:{}:{}:linux", this_listener.device_id, this_listener.device_name);
                             let _ = socket.send_to(reply.as_bytes(), remote_addr).await;
                             continue;
                         }
@@ -127,6 +133,17 @@ impl DiscoveryManager {
                                     let _ = std::fs::remove_file(TARGET_FILE);
                                 }
                             }
+                            continue;
+                        }
+
+                        // Strictly Linux-to-Android: ignore any Linux peer beacons
+                        let peer_os = parts.get(2).copied();
+                        if let Some(os) = peer_os {
+                            if os.eq_ignore_ascii_case("linux") {
+                                continue;
+                            }
+                        }
+                        if !peer_id.starts_with("android") && peer_os.is_none() {
                             continue;
                         }
 
@@ -151,7 +168,7 @@ pub async fn probe_peer_live(ip: &str, timeout_ms: u64) -> bool {
     };
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let ping = b"{\"type\":\"ping\"}\n";
+    let ping = b"{\"type\":\"ping\",\"os\":\"linux\"}\n";
     if stream.write_all(ping).await.is_err() {
         return false;
     }
@@ -161,6 +178,10 @@ pub async fn probe_peer_live(ip: &str, timeout_ms: u64) -> bool {
         if n > 0 {
             let s = String::from_utf8_lossy(&buf[..n]);
             if !s.contains("\"disconnect\"") {
+                // If peer is another Linux system, reject (Linux-to-Linux sync disabled)
+                if s.contains("\"os\":\"linux\"") {
+                    return false;
+                }
                 return true;
             }
         }
@@ -186,7 +207,7 @@ pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
     // 2. Active UDP probe burst to broadcast & ARP neighbors
     if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
         let _ = socket.set_broadcast(true);
-        let beacon = b"CLIP_SYNC:probe";
+        let beacon = b"CLIP_SYNC:probe:probe:Linux:linux";
         let b_addr: SocketAddr = format!("255.255.255.255:{}", UDP_PORT).parse().unwrap();
 
         for _ in 0..2 {
@@ -217,12 +238,22 @@ pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
                             continue;
                         }
                         let dev_name = parts.get(1).filter(|s| !s.is_empty()).map(|s| s.to_string()).or_else(|| Some("Phone".to_string()));
+                        let dev_os = parts.get(2).filter(|s| !s.is_empty()).map(|s| s.to_string());
+
+                        // Strictly Linux-to-Android: ignore other Linux systems
+                        if dev_os.as_deref() == Some("linux") {
+                            continue;
+                        }
+                        if !dev_id.as_deref().unwrap_or("").starts_with("android") && dev_os.as_deref() != Some("android") {
+                            continue;
+                        }
 
                         seen_ips.insert(ip.clone());
                         discovered.push(PeerDevice {
                             ip,
                             device_id: dev_id,
                             device_name: dev_name,
+                            os: Some("android".to_string()),
                         });
                     }
                 }
@@ -255,6 +286,7 @@ pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
                     ip: found_ip,
                     device_id: None,
                     device_name: Some("Phone".to_string()),
+                    os: Some("android".to_string()),
                 });
             }
         }
@@ -268,7 +300,7 @@ pub async fn refresh_active_peers(timeout_ms: u64) -> Vec<PeerDevice> {
     if !discovered.is_empty() {
         let current_target = get_selected_target();
         let target_to_save = if let Some(ref curr) = current_target {
-            if curr.eq_ignore_ascii_case("all") || discovered.iter().any(|p| p.ip == *curr) {
+            if discovered.iter().any(|p| p.ip == *curr) {
                 curr.clone()
             } else {
                 discovered[0].ip.clone()
@@ -296,23 +328,18 @@ pub async fn discover_phone_ip() -> Option<String> {
 pub async fn switch_active_device(target_arg: Option<&str>) {
     let mut peers = get_active_peers_list();
     if peers.is_empty() {
-        println!("[Refresh] Discovering ClipSync devices on local Wi-Fi...");
+        println!("[Refresh] Discovering ClipSync Android devices on local Wi-Fi...");
         peers = refresh_active_peers(800).await;
     }
 
     if peers.is_empty() {
-        println!("[Switch] No devices found on the local network.");
-        println!("   Ensure your phone or PC has ClipSync running and is on the same Wi-Fi.");
+        println!("[Switch] No Android devices found on the local network.");
+        println!("   Ensure your Android phone has ClipSync running and is on the same Wi-Fi.");
         return;
     }
 
     if let Some(arg) = target_arg {
         let clean = arg.trim();
-        if clean.eq_ignore_ascii_case("all") {
-            let _ = set_selected_target("ALL");
-            println!("[Switch] ✓ Switched active target to: 🌐 All Connected Devices (Broadcast)");
-            return;
-        }
 
         // Try numeric index (1-based)
         if let Ok(num) = clean.parse::<usize>() {
@@ -321,7 +348,7 @@ pub async fn switch_active_device(target_arg: Option<&str>) {
                 let _ = set_selected_target(&chosen.ip);
                 println!(
                     "[Switch] ✓ Switched active device to: {} ({})",
-                    chosen.device_name.as_deref().unwrap_or("Device"),
+                    chosen.device_name.as_deref().unwrap_or("Phone"),
                     chosen.ip
                 );
                 return;
@@ -340,19 +367,19 @@ pub async fn switch_active_device(target_arg: Option<&str>) {
             let _ = set_selected_target(&matched.ip);
             println!(
                 "[Switch] ✓ Switched active device to: {} ({})",
-                matched.device_name.as_deref().unwrap_or("Device"),
+                matched.device_name.as_deref().unwrap_or("Phone"),
                 matched.ip
             );
             return;
         }
 
-        println!("[Error] Device '{}' not found among connected devices.", clean);
-        println!("Available devices:");
+        println!("[Error] Android device '{}' not found among connected devices.", clean);
+        println!("Available Android devices:");
         for (i, p) in peers.iter().enumerate() {
             println!(
                 "   {}) {} ({})",
                 i + 1,
-                p.device_name.as_deref().unwrap_or("Device"),
+                p.device_name.as_deref().unwrap_or("Phone"),
                 p.ip
             );
         }
@@ -370,7 +397,7 @@ pub async fn switch_active_device(target_arg: Option<&str>) {
             "--list",
             "--radiolist",
             "--title=ClipSync - Switch Active Device",
-            "--text=Select active device to interact and sync with:",
+            "--text=Select active Android device to sync with:",
             "--column=Pick",
             "--column=IP",
             "--column=Device Name",
@@ -380,28 +407,19 @@ pub async fn switch_active_device(target_arg: Option<&str>) {
             let is_sel = if p.ip == current_active { "TRUE" } else { "FALSE" };
             cmd.arg(is_sel);
             cmd.arg(&p.ip);
-            cmd.arg(p.device_name.as_deref().unwrap_or("Device"));
+            cmd.arg(p.device_name.as_deref().unwrap_or("Phone"));
         }
-        let is_all = if current_active.eq_ignore_ascii_case("all") { "TRUE" } else { "FALSE" };
-        cmd.arg(is_all);
-        cmd.arg("ALL");
-        cmd.arg("🌐 All Connected Devices");
 
         cmd.args(["--print-column=2", "--hide-column=2", "--width=460", "--height=320"]);
 
         if let Ok(output) = cmd.output() {
             if output.status.success() {
                 let chosen = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if chosen.eq_ignore_ascii_case("ALL") {
-                    let _ = set_selected_target("ALL");
-                    println!("[Switch] ✓ Switched active target to: 🌐 All Connected Devices");
-                    return;
-                }
                 if let Some(selected) = peers.iter().find(|p| p.ip == chosen) {
                     let _ = set_selected_target(&selected.ip);
                     println!(
                         "[Switch] ✓ Switched active device to: {} ({})",
-                        selected.device_name.as_deref().unwrap_or("Device"),
+                        selected.device_name.as_deref().unwrap_or("Phone"),
                         selected.ip
                     );
                     return;
@@ -411,20 +429,20 @@ pub async fn switch_active_device(target_arg: Option<&str>) {
     }
 
     // CLI fallback
-    println!("\n[ClipSync] Select Active Device:");
+    println!("\n[ClipSync] Select Active Android Device:");
     for (i, p) in peers.iter().enumerate() {
         let is_active = if p.ip == current_active { " [ACTIVE]" } else { "" };
+        let radio = if p.ip == current_active { "(*)" } else { "( )" };
         println!(
-            "  {}) {} ({}){}",
+            "  {}) {} {} ({}){}",
             i + 1,
-            p.device_name.as_deref().unwrap_or("Device"),
+            radio,
+            p.device_name.as_deref().unwrap_or("Phone"),
             p.ip,
             is_active
         );
     }
-    let all_active = if current_active.eq_ignore_ascii_case("all") { " [ACTIVE]" } else { "" };
-    println!("  {}) 🌐 All Devices{}", peers.len() + 1, all_active);
-    print!("Choose device [1-{}]: ", peers.len() + 1);
+    print!("Choose device [1-{}]: ", peers.len());
     let _ = io::stdout().flush();
 
     let mut line = String::new();
@@ -436,20 +454,11 @@ pub async fn switch_active_device(target_arg: Option<&str>) {
                 let _ = set_selected_target(&chosen.ip);
                 println!(
                     "[Switch] ✓ Switched active device to: {} ({})",
-                    chosen.device_name.as_deref().unwrap_or("Device"),
+                    chosen.device_name.as_deref().unwrap_or("Phone"),
                     chosen.ip
                 );
                 return;
-            } else if num == peers.len() + 1 {
-                let _ = set_selected_target("ALL");
-                println!("[Switch] ✓ Switched active target to: 🌐 All Connected Devices");
-                return;
             }
-        }
-        if choice.eq_ignore_ascii_case("all") {
-            let _ = set_selected_target("ALL");
-            println!("[Switch] ✓ Switched active target to: 🌐 All Connected Devices");
-            return;
         }
         if let Some(matched) = peers.iter().find(|p| {
             p.ip.eq_ignore_ascii_case(choice)
@@ -462,7 +471,7 @@ pub async fn switch_active_device(target_arg: Option<&str>) {
             let _ = set_selected_target(&matched.ip);
             println!(
                 "[Switch] ✓ Switched active device to: {} ({})",
-                matched.device_name.as_deref().unwrap_or("Device"),
+                matched.device_name.as_deref().unwrap_or("Phone"),
                 matched.ip
             );
         }
@@ -482,9 +491,6 @@ pub async fn select_target_devices(filter: Option<&str>) -> Vec<PeerDevice> {
     // 1. Explicit CLI filter passed by user or script
     if let Some(f) = filter {
         let clean = f.trim();
-        if clean.eq_ignore_ascii_case("all") {
-            return peers;
-        }
         let matched: Vec<PeerDevice> = peers
             .iter()
             .filter(|p| {
@@ -503,16 +509,13 @@ pub async fn select_target_devices(filter: Option<&str>) -> Vec<PeerDevice> {
             .cloned()
             .collect();
         if !matched.is_empty() {
-            return matched;
+            return vec![matched[0].clone()];
         }
     }
 
     // 2. Active selected device
     if let Some(target) = get_selected_target() {
         let clean = target.trim();
-        if clean.eq_ignore_ascii_case("all") {
-            return peers;
-        }
         if let Some(active) = peers.iter().find(|p| p.ip == clean) {
             return vec![active.clone()];
         }

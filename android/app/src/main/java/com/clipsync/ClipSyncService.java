@@ -119,7 +119,8 @@ public class ClipSyncService extends AccessibilityService {
             try (DatagramSocket socket = new DatagramSocket()) {
                 socket.setBroadcast(true);
                 String devId = (instance != null && instance.deviceId != null) ? instance.deviceId : "android";
-                byte[] beacon = ("CLIP_SYNC:offline:" + devId).getBytes(StandardCharsets.UTF_8);
+                String devName = (instance != null) ? getDeviceName(instance) : "Phone";
+                byte[] beacon = ("CLIP_SYNC:offline:" + devId + ":" + devName + ":android").getBytes(StandardCharsets.UTF_8);
                 for (InetAddress bcast : CryptoUtils.getBroadcastAddresses()) {
                     try {
                         socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
@@ -233,8 +234,8 @@ public class ClipSyncService extends AccessibilityService {
                 }
 
                 // 3. Dual UDP probe burst (probe + announcement)
-                byte[] probePacket = ("CLIP_SYNC:probe:" + devId + ":" + devName).getBytes(StandardCharsets.UTF_8);
-                byte[] beaconPacket = ("CLIP_SYNC:" + devId + ":" + devName).getBytes(StandardCharsets.UTF_8);
+                byte[] probePacket = ("CLIP_SYNC:probe:" + devId + ":" + devName + ":android").getBytes(StandardCharsets.UTF_8);
+                byte[] beaconPacket = ("CLIP_SYNC:" + devId + ":" + devName + ":android").getBytes(StandardCharsets.UTF_8);
 
                 for (int round = 0; round < 2; round++) {
                     try (DatagramSocket socket = new DatagramSocket()) {
@@ -429,7 +430,6 @@ public class ClipSyncService extends AccessibilityService {
                 String target = ctx.getSharedPreferences("clipsync_prefs", Context.MODE_PRIVATE)
                                    .getString("active_target_ip", null);
                 if (target != null && !target.isEmpty()) {
-                    if ("ALL".equalsIgnoreCase(target)) return "ALL";
                     if (peers.containsKey(target)) return target;
                 }
             } catch (Exception ignored) {}
@@ -1104,6 +1104,7 @@ public class ClipSyncService extends AccessibilityService {
                 handshake.put("type", "handshake");
                 handshake.put("device_id", deviceId);
                 handshake.put("device_name", getDeviceName(this));
+                handshake.put("os", "android");
                 sendJsonToPeer(socket, handshake);
             } catch (Exception ignored) {}
             sendCurrentBatteryStatus();
@@ -1139,12 +1140,20 @@ public class ClipSyncService extends AccessibilityService {
                 }
 
                 if ("handshake".equals(type)) {
+                    String peerOs = obj.optString("os", "");
+                    String peerDevId = obj.optString("device_id", "");
+                    // Strictly Linux-to-Android: drop connection if peer is Android
+                    if ("android".equalsIgnoreCase(peerOs) || peerDevId.startsWith("android")) {
+                        android.util.Log.w("ClipSync", "Rejected peer " + hostIp + " (Android-to-Android sync disabled)");
+                        break;
+                    }
                     continue;
                 }
 
                 if ("ping".equals(type)) {
                     JSONObject pong = new JSONObject();
                     pong.put("type", "pong");
+                    pong.put("os", "android");
                     sendJsonToPeer(socket, pong);
                     continue;
                 }
@@ -1554,7 +1563,7 @@ public class ClipSyncService extends AccessibilityService {
                     socket.setBroadcast(true);
                     while (true) {
                         if (!isSyncPaused(this)) {
-                            byte[] beacon = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this)).getBytes(StandardCharsets.UTF_8);
+                            byte[] beacon = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this) + ":android").getBytes(StandardCharsets.UTF_8);
                             for (InetAddress bcast : CryptoUtils.getBroadcastAddresses()) {
                                 try {
                                     socket.send(new DatagramPacket(beacon, beacon.length, bcast, UDP_PORT));
@@ -1602,17 +1611,23 @@ public class ClipSyncService extends AccessibilityService {
 
                         // If probe or ping, reply immediately with device ID and name so peer can discover phone instantly
                         if (msg.startsWith("CLIP_SYNC:probe") || msg.startsWith("CLIP_SYNC:ping")) {
-                            String[] parts = msg.split(":", 4);
-                            if (parts.length >= 3) {
-                                String probeId = parts[2];
-                                String probeName = parts.length >= 4 ? parts[3] : "";
-                                if (!probeId.equals(deviceId) && !probeName.isEmpty()) {
-                                    peerNames.put(peerIp, probeName);
-                                    notifyPeerStateChanged();
-                                }
+                            String[] parts = msg.split(":");
+                            // CLIP_SYNC:probe:<devId>:<devName>:<devOs>
+                            String probeId = parts.length > 2 ? parts[2] : "";
+                            String probeName = parts.length > 3 ? parts[3] : "";
+                            String probeOs = parts.length > 4 ? parts[4] : "";
+
+                            // Strictly Linux-to-Android: ignore probes from other Android devices
+                            if ("android".equalsIgnoreCase(probeOs) || probeId.startsWith("android")) {
+                                continue;
+                            }
+
+                            if (!probeId.equals(deviceId) && !probeName.isEmpty()) {
+                                peerNames.put(peerIp, probeName);
+                                notifyPeerStateChanged();
                             }
                             try (DatagramSocket replySock = new DatagramSocket()) {
-                                byte[] reply = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this)).getBytes(StandardCharsets.UTF_8);
+                                byte[] reply = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this) + ":android").getBytes(StandardCharsets.UTF_8);
                                 replySock.send(new DatagramPacket(reply, reply.length, packet.getSocketAddress()));
                             } catch (Exception ignored) {}
                             CryptoUtils.addKnownPeerIp(this, peerIp);
@@ -1624,9 +1639,15 @@ public class ClipSyncService extends AccessibilityService {
                         }
 
                         if (msg.startsWith("CLIP_SYNC:")) {
-                            String[] parts = msg.split(":", 3);
+                            String[] parts = msg.split(":");
                             String senderId = parts.length > 1 ? parts[1] : "";
                             String senderName = parts.length > 2 ? parts[2] : "";
+                            String senderOs = parts.length > 3 ? parts[3] : "";
+
+                            // Strictly Linux-to-Android: ignore beacons from other Android devices
+                            if ("android".equalsIgnoreCase(senderOs) || senderId.startsWith("android")) {
+                                continue;
+                            }
 
                             if (senderId.equals(deviceId)) {
                                 continue;
@@ -1640,7 +1661,7 @@ public class ClipSyncService extends AccessibilityService {
 
                             // Reply back so peer also knows about us immediately
                             try (DatagramSocket replySock = new DatagramSocket()) {
-                                byte[] reply = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this)).getBytes(StandardCharsets.UTF_8);
+                                byte[] reply = ("CLIP_SYNC:" + deviceId + ":" + getDeviceName(this) + ":android").getBytes(StandardCharsets.UTF_8);
                                 replySock.send(new DatagramPacket(reply, reply.length, packet.getSocketAddress()));
                             } catch (Exception ignored) {}
 

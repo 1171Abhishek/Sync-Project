@@ -123,13 +123,13 @@ async fn show_connected_devices(force_refresh: bool) {
         first
     });
 
-    println!("[Devices] Connected Devices ({}):", active_peers.len());
+    println!("[Devices] Connected Android Devices ({}):", active_peers.len());
     for (i, peer) in active_peers.iter().enumerate() {
         let name = peer.device_name.as_deref().unwrap_or("Phone");
-        let is_active = if peer.ip == current_target || current_target.eq_ignore_ascii_case("all") {
+        let is_active = if peer.ip == current_target {
             " [ACTIVE]"
         } else {
-            ""
+            " [Standby]"
         };
         let radio = if peer.ip == current_target { "(*)" } else { "( )" };
         println!("   {} {} {} ({}) [Live]{}", i + 1, radio, name, peer.ip, is_active);
@@ -158,13 +158,12 @@ fn show_phone_status() {
 
     if peer_count == 1 {
         let name = active_peers[0].device_name.as_deref().unwrap_or("Phone");
-        println!("[Connected] Connected Device: {} ({})", name, active_peers[0].ip);
+        println!("[Connected] Connected Device: {} ({}) [ACTIVE]", name, active_peers[0].ip);
     } else {
-        let summaries: Vec<String> = active_peers
-            .iter()
-            .map(|p| format!("{} ({})", p.device_name.as_deref().unwrap_or("Device"), p.ip))
-            .collect();
-        println!("[Connected] Connected Devices ({}): {}", peer_count, summaries.join(", "));
+        let current_target = get_selected_target().unwrap_or_else(|| active_peers[0].ip.clone());
+        let active_peer = active_peers.iter().find(|p| p.ip == current_target).unwrap_or(&active_peers[0]);
+        let active_name = active_peer.device_name.as_deref().unwrap_or("Phone");
+        println!("[Connected] Connected Devices ({}): Active: {} ({})", peer_count, active_name, active_peer.ip);
     }
 
     if let Some(info) = read_battery_info() {

@@ -7,8 +7,9 @@ use crate::notifications::{
     close_desktop_notification, send_desktop_notification, send_desktop_notification_with_id,
 };
 use crate::types::{
-    get_active_peers_file, get_battery_file, get_peer_file, secure_write_file, BatteryInfo,
-    PeerDevice, SyncMessage, ACTIVE_PEERS_FILE, BATTERY_FILE, PEER_FILE, TCP_PORT,
+    get_active_peers_file, get_battery_file, get_peer_file, get_selected_target,
+    get_target_file, secure_write_file, set_selected_target, BatteryInfo, PeerDevice, SyncMessage,
+    ACTIVE_PEERS_FILE, BATTERY_FILE, PEER_FILE, TARGET_FILE, TCP_PORT,
 };
 use crate::url_handler::handle_url;
 use crate::utils::{extract_otp, get_host_ip, is_local_ip, is_otp};
@@ -27,6 +28,7 @@ pub struct SyncNode {
     pub device_name: String,
     pub peers: Arc<RwLock<HashMap<String, mpsc::Sender<Vec<u8>>>>>,
     pub peer_names: Arc<RwLock<HashMap<String, String>>>,
+    pub connected_order: Arc<RwLock<Vec<String>>>,
     pub crypto: Arc<CryptoManager>,
     pub clipboard: Arc<ClipboardManager>,
 
@@ -65,6 +67,8 @@ impl SyncNode {
 
         let _ = fs::remove_file(get_peer_file());
         let _ = fs::remove_file(PEER_FILE);
+        let _ = fs::remove_file(get_target_file());
+        let _ = fs::remove_file(TARGET_FILE);
         let _ = secure_write_file(get_active_peers_file(), b"[]");
         let _ = secure_write_file(ACTIVE_PEERS_FILE, b"[]");
 
@@ -73,6 +77,7 @@ impl SyncNode {
             device_name: hostname,
             peers: Arc::new(RwLock::new(HashMap::new())),
             peer_names: Arc::new(RwLock::new(HashMap::new())),
+            connected_order: Arc::new(RwLock::new(Vec::new())),
             crypto,
             clipboard,
             last_hash: Arc::new(Mutex::new(String::new())),
@@ -95,18 +100,37 @@ impl SyncNode {
     pub async fn sync_peers_file(&self) {
         let peers_guard = self.peers.read().await;
         let names_guard = self.peer_names.read().await;
+        let order_guard = self.connected_order.read().await;
 
         let mut devices = Vec::new();
-        for ip in peers_guard.keys() {
-            let name = names_guard
-                .get(ip)
-                .cloned()
-                .unwrap_or_else(|| "Phone".to_string());
-            devices.push(PeerDevice {
-                ip: ip.clone(),
-                device_id: None,
-                device_name: Some(name),
-            });
+        // Follow the order of connection strictly (first connected device comes first)
+        for ip in order_guard.iter() {
+            if peers_guard.contains_key(ip) {
+                let name = names_guard
+                    .get(ip)
+                    .cloned()
+                    .unwrap_or_else(|| "Phone".to_string());
+                devices.push(PeerDevice {
+                    ip: ip.clone(),
+                    device_id: None,
+                    device_name: Some(name),
+                    os: Some("android".to_string()),
+                });
+            }
+        }
+        for (ip, _) in peers_guard.iter() {
+            if !devices.iter().any(|d| &d.ip == ip) {
+                let name = names_guard
+                    .get(ip)
+                    .cloned()
+                    .unwrap_or_else(|| "Phone".to_string());
+                devices.push(PeerDevice {
+                    ip: ip.clone(),
+                    device_id: None,
+                    device_name: Some(name),
+                    os: Some("android".to_string()),
+                });
+            }
         }
 
         if let Ok(data) = serde_json::to_vec(&devices) {
@@ -115,11 +139,17 @@ impl SyncNode {
         }
 
         if !devices.is_empty() {
-            let _ = secure_write_file(get_peer_file(), devices[0].ip.as_bytes());
-            let _ = secure_write_file(PEER_FILE, devices[0].ip.as_bytes());
+            let current = get_selected_target();
+            let is_valid = current.as_ref().map_or(false, |c| devices.iter().any(|d| &d.ip == c));
+            if !is_valid {
+                // Automatically activate the first connected device
+                let _ = set_selected_target(&devices[0].ip);
+            }
         } else {
             let _ = fs::remove_file(get_peer_file());
             let _ = fs::remove_file(PEER_FILE);
+            let _ = fs::remove_file(get_target_file());
+            let _ = fs::remove_file(TARGET_FILE);
         }
     }
 
@@ -152,8 +182,58 @@ impl SyncNode {
         }
     }
 
+    pub async fn send_to_active_device(&self, msg: SyncMessage) {
+        let inner_data = match serde_json::to_vec(&msg) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        let wire_data = match self.crypto.encrypt(&inner_data) {
+            Ok(payload) => {
+                let enc_msg = SyncMessage {
+                    msg_type: Some("encrypted".to_string()),
+                    device_id: self.device_id.clone(),
+                    payload: Some(payload),
+                    ..Default::default()
+                };
+                serde_json::to_vec(&enc_msg).unwrap_or(inner_data)
+            }
+            Err(_) => inner_data,
+        };
+
+        let target_ip = {
+            let current = get_selected_target();
+            let peers = self.peers.read().await;
+            if let Some(ref t) = current {
+                if peers.contains_key(t) {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        let final_target = match target_ip {
+            Some(ip) => Some(ip),
+            None => {
+                let order = self.connected_order.read().await;
+                order.first().cloned()
+            }
+        };
+
+        if let Some(target) = final_target {
+            let peers_guard = self.peers.read().await;
+            if let Some(sender) = peers_guard.get(&target) {
+                let _ = sender.send(wire_data).await;
+            }
+        }
+    }
+
     pub async fn broadcast_clipboard(&self, content: String, hash: String) {
-        self.broadcast_message(SyncMessage {
+        // Send clipboard sync ONLY to the active Android device
+        self.send_to_active_device(SyncMessage {
             msg_type: Some("clipboard".to_string()),
             device_id: self.device_id.clone(),
             hash: Some(hash),
@@ -224,16 +304,26 @@ impl SyncNode {
         {
             let mut peers = self.peers.write().await;
             peers.insert(host_ip.clone(), tx);
+            let mut order = self.connected_order.write().await;
+            if !order.contains(&host_ip) {
+                order.push(host_ip.clone());
+            }
         }
         self.sync_peers_file().await;
 
-        println!("[Connected] Connected with peer: {}", host_ip);
+        let active_target = get_selected_target().unwrap_or_default();
+        if active_target == host_ip {
+            println!("[Connected] Connected with peer: {} [ACTIVE]", host_ip);
+        } else {
+            println!("[Connected] Connected with peer: {} [Standby - run 'clip-sync switch' to activate]", host_ip);
+        }
 
         // Send handshake
         self.broadcast_message(SyncMessage {
             msg_type: Some("handshake".to_string()),
             device_id: self.device_id.clone(),
             device_name: Some(self.device_name.clone()),
+            os: Some("linux".to_string()),
             ..Default::default()
         })
         .await;
@@ -294,12 +384,54 @@ impl SyncNode {
                 }
             }
 
+            // Strictly Linux-to-Android: drop connection if peer identifies as Linux
+            if msg.msg_type.as_deref() == Some("handshake") {
+                let is_linux = msg.os.as_deref() == Some("linux")
+                    || (!msg.device_id.starts_with("android")
+                        && msg.os.is_none()
+                        && (msg.device_name.as_deref().unwrap_or("").to_lowercase().contains("linux")
+                            || msg.device_name.as_deref().unwrap_or("").to_lowercase().contains("desktop")
+                            || msg.device_name.as_deref().unwrap_or("").to_lowercase().contains("pc")));
+                if is_linux {
+                    println!("[Security] Disconnected peer {} - Linux-to-Linux sync is disabled (Linux-to-Android only).", peer_ip);
+                    break;
+                }
+                continue;
+            }
+
+            if msg.msg_type.as_deref() == Some("ping") {
+                let pong = SyncMessage {
+                    msg_type: Some("pong".to_string()),
+                    device_id: node_ref.device_id.clone(),
+                    os: Some("linux".to_string()),
+                    ..Default::default()
+                };
+                let inner_data = serde_json::to_vec(&pong).unwrap_or_default();
+                let wire = match node_ref.crypto.encrypt(&inner_data) {
+                    Ok(p) => {
+                        let enc = SyncMessage {
+                            msg_type: Some("encrypted".to_string()),
+                            device_id: node_ref.device_id.clone(),
+                            payload: Some(p),
+                            ..Default::default()
+                        };
+                        serde_json::to_vec(&enc).unwrap_or(inner_data)
+                    }
+                    Err(_) => inner_data,
+                };
+                let peers_guard = node_ref.peers.read().await;
+                if let Some(sender) = peers_guard.get(&peer_ip) {
+                    let _ = sender.send(wire).await;
+                }
+                continue;
+            }
+
             match msg.msg_type.as_deref().unwrap_or("") {
                 "disconnect" => {
                     println!("[Disconnected] Peer {} went offline.", peer_ip);
                     break;
                 }
-                "ping" | "pong" | "handshake" => continue,
+                "pong" => continue,
                 "url" => {
                     handle_url(&msg, &node_ref.clipboard).await;
                 }
@@ -313,6 +445,15 @@ impl SyncNode {
                     node_ref.handle_call(&msg).await;
                 }
                 "clipboard" | "" => {
+                    // Strictly interact with active target device only
+                    let active_target = get_selected_target();
+                    if let Some(ref target) = active_target {
+                        if target != &peer_ip {
+                            println!("[Clipboard] Ignored clipboard from standby device {} (active target is {})", peer_ip, target);
+                            continue;
+                        }
+                    }
+
                     if let Some(ref content) = msg.content {
                         let clean = content.trim();
                         let incoming_hash = msg.hash.unwrap_or_else(|| crate::utils::hash_content(clean));
@@ -363,8 +504,21 @@ impl SyncNode {
             peers.remove(&host_ip);
             let mut names = self.peer_names.write().await;
             names.remove(&host_ip);
+            let mut order = self.connected_order.write().await;
+            order.retain(|ip| ip != &host_ip);
         }
         self.sync_peers_file().await;
+
+        let current_target = get_selected_target();
+        if current_target.as_deref() == Some(&host_ip) {
+            let order = self.connected_order.read().await;
+            if let Some(next_ip) = order.first() {
+                let _ = set_selected_target(next_ip);
+                let names = self.peer_names.read().await;
+                let next_name = names.get(next_ip).cloned().unwrap_or_else(|| "Phone".to_string());
+                println!("[Active Device] Active device disconnected. Switched active device to: {} ({})", next_name, next_ip);
+            }
+        }
 
         println!("[Disconnected] Disconnected from: {}", host_ip);
     }
@@ -576,6 +730,7 @@ impl SyncNode {
             device_name: self.device_name.clone(),
             peers: self.peers.clone(),
             peer_names: self.peer_names.clone(),
+            connected_order: self.connected_order.clone(),
             crypto: self.crypto.clone(),
             clipboard: self.clipboard.clone(),
             last_hash: self.last_hash.clone(),

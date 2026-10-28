@@ -179,7 +179,7 @@ public class ShareActivity extends Activity {
 
             // 1. Direct send to active target device if set
             String activeIp = ClipSyncService.getActiveTargetIp(this);
-            if (activeIp != null && !"ALL".equalsIgnoreCase(activeIp)) {
+            if (activeIp != null) {
                 for (TargetDevice d : devices) {
                     if (d.ip.equals(activeIp)) {
                         mainHandler.post(() -> {
@@ -205,24 +205,18 @@ public class ShareActivity extends Activity {
             mainHandler.post(() -> {
                 if (isFinishing() || isDestroyed()) return;
 
-                String[] labels = new String[devices.size() + 1];
+                String[] labels = new String[devices.size()];
                 for (int i = 0; i < devices.size(); i++) {
                     labels[i] = devices.get(i).getDisplayLabel();
                 }
-                labels[devices.size()] = "🌐 All Devices (" + devices.size() + " devices)";
 
                 AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
                 builder.setTitle("Choose Device to Send File");
                 builder.setItems(labels, (dialog, which) -> {
-                    if (which < devices.size()) {
+                    if (which >= 0 && which < devices.size()) {
                         TargetDevice chosen = devices.get(which);
                         Toast.makeText(getApplicationContext(), "Sending to " + chosen.name + "...", Toast.LENGTH_SHORT).show();
                         new Thread(() -> uploadFilesToIps(uris, Collections.singleton(chosen.ip), chosen.name)).start();
-                    } else {
-                        Toast.makeText(getApplicationContext(), "Sending to all devices...", Toast.LENGTH_SHORT).show();
-                        Set<String> allIps = new HashSet<>();
-                        for (TargetDevice d : devices) allIps.add(d.ip);
-                        new Thread(() -> uploadFilesToIps(uris, allIps, "All Devices")).start();
                     }
                 });
                 builder.setOnCancelListener(dialog -> finish());
@@ -268,7 +262,7 @@ public class ShareActivity extends Activity {
 
             // 1. Direct send to active target device if set
             String activeIp = ClipSyncService.getActiveTargetIp(this);
-            if (activeIp != null && !"ALL".equalsIgnoreCase(activeIp)) {
+            if (activeIp != null) {
                 for (TargetDevice d : devices) {
                     if (d.ip.equals(activeIp)) {
                         mainHandler.post(() -> {
@@ -294,22 +288,17 @@ public class ShareActivity extends Activity {
             mainHandler.post(() -> {
                 if (isFinishing() || isDestroyed()) return;
 
-                String[] labels = new String[devices.size() + 1];
+                String[] labels = new String[devices.size()];
                 for (int i = 0; i < devices.size(); i++) {
                     labels[i] = devices.get(i).getDisplayLabel();
                 }
-                labels[devices.size()] = "🌐 All Devices (" + devices.size() + " devices)";
 
                 AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
                 builder.setTitle("Choose Device to Open Link");
                 builder.setItems(labels, (dialog, which) -> {
-                    if (which < devices.size()) {
+                    if (which >= 0 && which < devices.size()) {
                         TargetDevice chosen = devices.get(which);
                         new Thread(() -> executeSendUrl(url, text, Collections.singleton(chosen.ip), chosen.name)).start();
-                    } else {
-                        Set<String> allIps = new HashSet<>();
-                        for (TargetDevice d : devices) allIps.add(d.ip);
-                        new Thread(() -> executeSendUrl(url, text, allIps, "All Devices")).start();
                     }
                 });
                 builder.setOnCancelListener(dialog -> finish());
@@ -351,7 +340,7 @@ public class ShareActivity extends Activity {
 
             // 1. Direct send to active target device if set
             String activeIp = ClipSyncService.getActiveTargetIp(this);
-            if (activeIp != null && !"ALL".equalsIgnoreCase(activeIp)) {
+            if (activeIp != null) {
                 for (TargetDevice d : devices) {
                     if (d.ip.equals(activeIp)) {
                         mainHandler.post(() -> {
@@ -377,22 +366,18 @@ public class ShareActivity extends Activity {
             mainHandler.post(() -> {
                 if (isFinishing() || isDestroyed()) return;
 
-                String[] labels = new String[devices.size() + 1];
+                String[] labels = new String[devices.size()];
                 for (int i = 0; i < devices.size(); i++) {
                     labels[i] = devices.get(i).getDisplayLabel();
                 }
-                labels[devices.size()] = "🌐 All Devices (" + devices.size() + " devices)";
 
                 AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
                 builder.setTitle("Choose Device to Copy Clipboard");
                 builder.setItems(labels, (dialog, which) -> {
-                    if (which < devices.size()) {
+                    if (which >= 0 && which < devices.size()) {
                         TargetDevice chosen = devices.get(which);
                         ClipSyncService.broadcastText(text, Collections.singleton(chosen.ip));
                         Toast.makeText(getApplicationContext(), "✓ Copied to clipboard on " + chosen.name, Toast.LENGTH_SHORT).show();
-                    } else {
-                        ClipSyncService.broadcastText(text, null);
-                        Toast.makeText(getApplicationContext(), "✓ Copied to clipboard on all devices", Toast.LENGTH_SHORT).show();
                     }
                     finish();
                 });
