@@ -1942,12 +1942,13 @@ public class ClipSyncService extends AccessibilityService {
 
     private void setupTelephonyListener() {
         try {
+            if (checkCallingOrSelfPermission("android.permission.READ_PHONE_STATE") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
             android.telephony.TelephonyManager tm = (android.telephony.TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
             if (tm == null) return;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    tm.registerTelephonyCallback(getMainExecutor(), new Api31CallCallback(this));
-                }
+                tm.registerTelephonyCallback(getMainExecutor(), new Api31CallCallback(this));
             } else {
                 tm.listen(new android.telephony.PhoneStateListener() {
                     @Override

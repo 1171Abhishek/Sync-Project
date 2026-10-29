@@ -86,18 +86,9 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         // Android 13+ runtime permissions
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            java.util.List<String> perms = new java.util.ArrayList<>();
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    perms.add(android.Manifest.permission.POST_NOTIFICATIONS);
-                }
-            }
-            if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                perms.add(android.Manifest.permission.READ_PHONE_STATE);
-            }
-            if (!perms.isEmpty()) {
-                requestPermissions(perms.toArray(new String[0]), 101);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 101);
             }
         }
 
